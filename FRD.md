@@ -108,14 +108,14 @@ reporting.
 | ------------------- | ------------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | Customer            | Name, phone number, email address                                               | CustomerID         | Can own one or more vehicles                                                                                      |
 | Vehicle             | VIN, make, model, year                                                          | VehicleID          | Belongs to a customer. Can have multiple service appointments.                                                    |
-| Technician          | Name, phone number, email address                                               | TechnicianID       | Can be assigned to one or more service appointments.                                                              |
+| Technician          | Name, phone number, email address                                               | TechnicianID       | Can be assigned to multiple service appointments.                                                                 |
 | Service Appointment | Appointment date/time, status, service information                              | AppointmentID      | Is associated with a vehicle. Is assigned to a technician.                                                        |
 | Repair              | Repair description, repair type, status, completion date                        | RepairID           | Is associated with a service appointment. Can use multiple parts.                                                 |
 | Repair Estimate     | Estimated cost, description, estimate date, status                              | EstimateID         | Is associated with a service appointment.                                                                         |
 | Part                | Part name, price, quantity available, minimum inventory level                   | PartID             | Can be used in multiple repairs.                                                                                  |
 | Parts Usage         | Part, quantity used, unit price at time of use                                  | PartsUsageID       | Associates a repair with a part.                                                                                  |
 | Invoice             | Total amount, date, status                                                      | InvoiceID          | Associated with a service appointment.                                                                            |
-| User Account        | User name, role type, associated customer or technician when applicable         | UserID             | Identifies the user and associates the account with a role and, when applicable, a customer or technician record. |
+| User Account        | User name, name, role type, associated customer or technician when applicable   | UserID             | Identifies the user and associates the account with a role and, when applicable, a customer or technician record. |
 | Audit Log           | User account, action performed, affected record, date/time, previous/new values | AuditLogID         | Records important changes made by users to system records.                                                        |
 
 ## 8. Business Rules and Validation Rules
@@ -183,6 +183,10 @@ reporting.
 - Assumption: Status values for service appointments, repair estimates,
   repairs, and invoices are maintained through controlled allowed
   values.
+
+- Assumption: Each service appointment may have at most one repair estimate and at most one invoice.
+
+- Assumption: A customer and a technician may each have at most one user account.
 
 ### Constraints
 
