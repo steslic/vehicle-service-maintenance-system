@@ -2,14 +2,14 @@
 
 ## 1. Project Identification
 
-| Item                | Information                                                             |
-| ------------------- | ----------------------------------------------------------------------- |
-| Project title       | Vehicle Service and Maintenance Management System                       |
-| Prepared by         | Sebastian Teslic                                                        |
-| Course/section      | 01:198:437                                                              |
-| Date                | 9/12/2026                                                               |
-| Version             | 1.0                                                                     |
-| Repository location | https://github.com/steslic/database-implementation-2026-SebastianTeslic |
+| Item                | Information                                                   |
+| ------------------- | ------------------------------------------------------------- |
+| Project title       | Vehicle Service and Maintenance Management System             |
+| Prepared by         | Sebastian Teslic                                              |
+| Course/section      | 01:198:437                                                    |
+| Date                | 9/12/2026                                                     |
+| Version             | 1.0                                                           |
+| Repository location | https://github.com/steslic/vehicle-service-maintenance-system |
 
 ## 2. Business Problem and Purpose
 
