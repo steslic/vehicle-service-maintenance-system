@@ -32,6 +32,8 @@ The project uses a single MySQL database/schema. It will use fictional, non-sens
 
 ## 5. Entity-relationship design
 
+The complete ER diagram is maintained in the project repository under the `docs/` directory as an editable draw.io file and exported SVG.
+
 | Entity             | Purpose                                                           | Primary key             | Important relationships                                                                                                                                  |
 | ------------------ | ----------------------------------------------------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Customer           | Stores customer identity and contact information                  | CustomerID              | May own zero or more Vehicles                                                                                                                            |
@@ -316,6 +318,30 @@ NewValue
 
 )
 ```
+
+### ER-to-Relational Mapping Documentation
+
+| ER Component                                          | Database Implementation                                    | Constraints Applied                                                    |
+| ----------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Customer strong entity                                | Customer table                                             | CustomerID primary key                                                 |
+| Vehicle strong entity                                 | Vehicle table                                              | VehicleID primary key, CustomerID foreign key, VIN UNIQUE              |
+| Customer-Vehicle 1:N relationship                     | CustomerID stored in Vehicle                               | Foreign key, NOT NULL, referential integrity                           |
+| Technician strong entity                              | Technician table                                           | TechnicianID primary key, Email UNIQUE                                 |
+| Technician-ServiceAppointment 1:N relationship        | TechnicianID stored in ServiceAppointment                  | Foreign key, NOT NULL                                                  |
+| Vehicle-ServiceAppointment 1:N relationship           | VehicleID stored in ServiceAppointment                     | Foreign key, NOT NULL                                                  |
+| ServiceAppointment-Repair 1:N relationship            | AppointmentID stored in Repair                             | Foreign key, NOT NULL                                                  |
+| Repair-Part M:N relationship                          | PartsUsage junction table                                  | PartsUsageID primary key; foreign keys RepairID and PartID             |
+| RepairEstimate weak-entity relationship               | EstimateLineItem table                                     | Composite primary key (EstimateID, LineNumber); EstimateID foreign key |
+| ServiceAppointment-RepairEstimate 1:0..1 relationship | AppointmentID stored in RepairEstimate                     | Foreign key, UNIQUE                                                    |
+| ServiceAppointment-Invoice 1:0..1 relationship        | AppointmentID stored in Invoice                            | Foreign key, UNIQUE                                                    |
+| Invoice-InvoiceLineItem 1:N relationship              | InvoiceID stored in InvoiceLineItem                        | Foreign key, NOT NULL                                                  |
+| Technician-UserAccount 1:0..1 relationship            | TechnicianID stored in UserAccount                         | Foreign key, UNIQUE, nullable                                          |
+| UserAccount-AuditLog 1:N relationship                 | UserID stored in AuditLog                                  | Foreign key, NOT NULL                                                  |
+| UserAccount-ServiceAppointment 1:N relationship       | CreatedByUserID stored in ServiceAppointment               | Foreign key, NOT NULL                                                  |
+| UserAccount-RepairEstimate relationships              | CreatedByUserID, ApprovedByUserID stored in RepairEstimate | Foreign keys; approval FK nullable                                     |
+| UserAccount-Invoice relationships                     | CreatedByUserID, FinalizedByUserID stored in Invoice       | Foreign keys; finalization FK nullable                                 |
+| UserAccount-PartsUsage 1:N relationship               | RecordedByUserID stored in PartsUsage                      | Foreign key, NOT NULL                                                  |
+| Technician-Repair relationship                        | CompletedByTechnicianID stored in Repair                   | Foreign key, nullable until completion                                 |
 
 ## 7. Table and attribute specifications
 
@@ -620,3 +646,93 @@ The database is designed to satisfy First Normal Form, Second Normal Form, and T
 | BR-08            | Multi-step repair completion must either fully succeed or fully roll back.    | Stored procedure using START TRANSACTION, COMMIT, and ROLLBACK.                                         | Force one step to fail and verify that none of the earlier changes remain.                                 |
 | BR-09            | A technician cannot be assigned to conflicting active appointments.           | Procedure or validation query checks technician/date/time conflicts before insert/update.               | Attempt to assign one technician to two active appointments at the same time and verify rejection.         |
 | BR-10            | Parts usage cannot reduce inventory below zero.                               | Procedure/trigger checks QuantityOnHand \>= QuantityUsed before recording usage and updating inventory. | Attempt to use more parts than are available and verify rejection with inventory unchanged.                |
+
+## 10. Database objects and SQL design
+
+| Object type      | Object name                           | Purpose                                                                                                                                               | Related requirements                                   |
+| ---------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| View             | `vw_VehicleServiceHistory`            | Displays completed repairs and parts used for a selected vehicle.                                                                                     | FR-04, RQ-02                                           |
+| View             | `vw_TechnicianWorkload`               | Displays service appointments assigned to each technician for workload reporting.                                                                     | FR-06, RQ-05                                           |
+| Stored procedure | `sp_CreateServiceAppointment`         | Checks vehicle ownership, duplicate appointments, and technician conflicts before creating an appointment.                                            | FR-02, FR-05, FR-16, BR-04, BR-09                      |
+| Stored procedure | `sp_CompleteRepair`                   | Completes a repair, records part usage, updates inventory, writes required audit records, and commits or rolls back the operation as one transaction. | FR-03, FR-08, FR-12, FR-13, FR-20, BR-07, BR-08, BR-10 |
+| Trigger          | `trg_ServiceAppointment_Audit`        | Automatically creates an AuditLog record when important service-appointment data is changed.                                                          | FR-08, SEC-03                                          |
+| Trigger          | `trg_Invoice_Audit`                   | Automatically records important invoice changes and finalization activity.                                                                            | FR-08, FR-18, SEC-03                                   |
+| Trigger          | `trg_RepairEstimate_Audit`            | Automatically records important repair-estimate changes, approvals, finalization, and status changes in AuditLog.                                     | FR-08, FR-18, SEC-03                                   |
+| Trigger          | `trg_PartInventory_Audit`             | Automatically records inventory quantity changes in the log.                                                                                          | FR-08, FR-13, SEC-03                                   |
+| Index            | `idx_ServiceAppointment_DateTime`     | Supports appointment queries filtered by date and time.                                                                                               | RQ-01                                                  |
+| Index            | `idx_ServiceAppointment_TechnicianID` | Supports technician workload queries and scheduling-conflict checks.                                                                                  | FR-06, FR-16, RQ-05                                    |
+| Index            | `idx_PartsUsage_RepairID`             | Supports vehicle service-history queries that retrieve parts used for repairs.                                                                        | FR-04, RQ-02                                           |
+
+## 11. Query and report design
+
+| Query ID | Query/report               | Main tables                                           | Key SQL features                   | Expected result                                                                                                                               |
+| -------- | -------------------------- | ----------------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| RQ-01    | Daily Service Appointments | ServiceAppointment, Vehicle, Technician               | JOIN, WHERE, ORDER BY              | Service appointments for a selected day showing appointment date/time, vehicle, assigned technician, and status, ordered by appointment time. |
+| RQ-02    | Vehicle Service History    | Vehicle, ServiceAppointment, Repair, PartsUsage, Part | Multiple JOINs, WHERE, ORDER BY    | Completed repairs for a selected vehicle, including repair description, completion date, parts used, and quantity used                        |
+| RQ-03    | Common Repairs Report      | Repair                                                | WHERE, GROUP BY, COUNT(), ORDER BY | Repair types with the number of completed repairs, ordered from most common to least common.                                                  |
+| RQ-04    | Low Parts Inventory Report | Part                                                  | WHERE, comparison                  | Parts whose QuantityOnHand is below MinimumInventoryLevel, showing part ID, part name, quantity available, and minimum level.                 |
+| RQ-05    | Shop Workload Report       | Technician, ServiceAppointment                        | LEFT JOIN, COUNT(), GROUP BY       | Each technician with the number of active or scheduled appointments assigned to them.                                                         |
+| RQ-06    | Parts Revenue Report       | Part, PartsUsage, Repair                              | JOIN, SUM(), GROUP BY              | Part name, total quantity used, and total revenue generated from parts used in repairs.                                                       |
+
+## 12. Security, privacy, and backup assumptions
+
+- Access to the database will be limited to authorized project users through MySQL database credentials.
+- Role-based permissions will be used to restrict actions for Service Advisor, Technician, and Manager users according to the project’s entitlement requirements.
+- Customers do not have direct database or system access.
+- The project will use fictional sample data only and will not include real credit-card numbers, passwords, Social Security numbers, or other highly sensitive information.
+- Audit logging will be used to record important changes to protected operational records.
+- In a production environment, the database would use encrypted connections, stronger credential management, scheduled backups, access monitoring, and a documented backup and recovery process.
+- Production-grade security hardening, automated backup scheduling, disaster recovery, and enterprise-scale security monitoring are outside the scope of this course implementation unless specifically required.
+
+### Performance and scalability considerations
+
+Indexes will be used on frequently searched appointment dates, technician assignments, and repair/parts relationships to support common reads and joins. Query performance will be evaluated using EXPLAIN. Multi-step repair completion will use transactions to maintain consistency during updates. Large batch inserts and data extracts should be processed in manageable batches to reduce long-running locks and excessive transaction size. As appointment, repair, and audit data grows, indexes on frequently filtered foreign keys, dates, and status columns can be reviewed and adjusted based on query plans. Enterprise-scale performance tuning is outside the scope of this class implementation.
+
+## 13. Test plan and acceptance criteria
+
+| Test ID | Requirement/rule | Test action                                                                                    | Expected result                                                                                                                | Actual result/pass-fail |
+| ------- | ---------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------- |
+| T-01    | FR-01            | Insert a valid customer and vehicle with all required fields.                                  | Customer and vehicle records are inserted with unique IDs, and the vehicle references the correct customer.                    |                         |
+| T-02    | FR-05 / BR-02    | Attempt to insert a vehicle with a CustomerID that does not exist.                             | Insert is rejected by the foreign key constraint.                                                                              |                         |
+| T-03    | FR-02            | Create a valid service appointment for an existing vehicle and active technician.              | Appointment is created with status Scheduled and correct vehicle, technician, creating user, and timestamp.                    |                         |
+| T-04    | BR-04            | Attempt to create a duplicate active appointment for the same vehicle at the same date/time.   | Appointment creation is rejected by the validation procedure or logic.                                                         |                         |
+| T-05    | FR-16 / BR-09    | Attempt to assign the same technician to two conflicting active appointments.                  | Second assignment is rejected.                                                                                                 |                         |
+| T-06    | BR-05 / FR-19    | Use an invalid status value.                                                                   | Operation is rejected.                                                                                                         |                         |
+| T-07    | FR-12 / BR-10    | Record more parts usage than inventory allows.                                                 | Operation is rejected and inventory stays unchanged.                                                                           |                         |
+| T-08    | FR-13            | Record valid parts usage.                                                                      | PartsUsage is created and inventory decreases.                                                                                 |                         |
+| T-09    | FR-20 / BR-08    | Force repair completion to fail midway.                                                        | Entire transaction rolls back.                                                                                                 |                         |
+| T-10    | FR-08 / SEC-03   | Perform an audited update.                                                                     | Correct AuditLog record is created.                                                                                            |                         |
+| T-11    | SEC-02           | Technician attempts to modify protected data.                                                  | Operation is denied.                                                                                                           |                         |
+| T-12    | RQ-02 / RQ-05    | Run service-history and workload queries.                                                      | Queries return the expected records and counts.                                                                                |                         |
+| T-13    | FR-18 / SEC-01   | Finalize an invoice, then attempt to update or delete it.                                      | Modification or deletion is rejected and the finalized record remains unchanged.                                               |                         |
+| T-14    | RQ-01            | Run the Daily Service Appointments query for a selected date.                                  | Query returns appointments for that date with vehicle, technician, status, and appointment time.                               |                         |
+| T-15    | RQ-02            | Run the Vehicle Service History query for a selected vehicle.                                  | Query returns completed repairs and parts used for that vehicle.                                                               |                         |
+| T-16    | RQ-05            | Run the Shop Workload report.                                                                  | Results show technicians with their assigned appointment counts.                                                               |                         |
+| T-17    | RQ-06            | Run the Parts Revenue Report.                                                                  | Results show part names, total quantity used, and calculated parts revenue.                                                    |                         |
+| T-18    | FR-03 / FR-20    | Complete a valid repair with valid parts usage.                                                | Repair is completed, PartsUsage is recorded, inventory decreases, required audit data is created, and the transaction commits. |                         |
+| T-19    | FR-19            | Attempt an invalid status transition, such as changing a Completed repair back to In Progress. | Operation is rejected and the record remains unchanged.                                                                        |                         |
+
+## 14. Requirement traceability
+
+| Functional Requirement                         | Tables/relationships                                                        | Constraints or objects                                                                                   | Query/report/test evidence                                 |
+| ---------------------------------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| FR-01: Store customer and vehicle records      | Customer → Vehicle                                                          | CustomerID PK; VehicleID PK; Vehicle.CustomerID FK; VIN UNIQUE                                           | T-01; customer/vehicle insert demonstration                |
+| FR-02: Create service appointments             | Vehicle → ServiceAppointment ← Technician; UserAccount → ServiceAppointment | Appointment PK; vehicle/technician/user FKs; `sp_CreateServiceAppointment`; required-field/status checks | T-03; RQ-01 Daily Service Appointments                     |
+| FR-03: Record completed repairs                | ServiceAppointment → Repair ← Technician                                    | RepairID PK; AppointmentID FK; technician FK; repair-status checks                                       | T-18; RQ-02 Vehicle Service History                        |
+| FR-04: Display vehicle service history         | Vehicle → ServiceAppointment → Repair → PartsUsage → Part                   | FKs connecting vehicle, appointment, repair, and parts usage; `vw_VehicleServiceHistory`                 | RQ-02 Vehicle Service History                              |
+| FR-05: Validate appointment data               | Vehicle, Technician, ServiceAppointment                                     | FKs; validation in `sp_CreateServiceAppointment`                                                         | T-02; T-03                                                 |
+| FR-06: Track technician workload               | Technician → ServiceAppointment                                             | TechnicianID FK; `vw_TechnicianWorkload`; technician/date index                                          | RQ-05 Shop Workload Report                                 |
+| FR-07: Restrict access based on role           | UserAccount, protected operational tables                                   | RoleType CHECK; MySQL roles/privileges; controlled procedures/views                                      | T-11; role/entitlement demonstration                       |
+| FR-08: Maintain audit history                  | UserAccount → AuditLog; audited operational tables                          | AuditLog FKs; audit triggers/procedures                                                                  | T-10                                                       |
+| FR-09: Report common repairs and parts revenue | Repair, Part, PartsUsage                                                    | RQ-03 and RQ-06 report queries; GROUP BY, COUNT(), SUM()                                                 | RQ-03 Common Repairs Report; RQ-06 Parts Revenue Report    |
+| FR-10: Create repair estimates and invoices    | ServiceAppointment, RepairEstimate, Invoice, UserAccount                    | Appointment FKs; CreatedByUserID FKs; status checks; UNIQUE AppointmentID                                | Estimate/invoice creation demonstration                    |
+| FR-11: Manage part inventory                   | Part                                                                        | PartID PK; PartNumber UNIQUE; inventory/cost/price CHECK constraints                                     | Part inventory INSERT/UPDATE/SELECT demonstration; RQ-04   |
+| FR-12: Record parts used during repairs        | Repair → PartsUsage ← Part                                                  | Repair ID FK; PartID FK; quantity checks; `sp_CompleteRepair`                                            | T-07; T-08                                                 |
+| FR-13: Update inventory after parts usage      | Part → PartsUsage                                                           | Inventory CHECK; `sp_CompleteRepair`; inventory audit trigger                                            | T-08                                                       |
+| FR-14: Modify non-completed appointments       | ServiceAppointment, Technician, Vehicle                                     | Status checks; appointment update/reschedule/cancel validation                                           | Appointment update/reschedule/cancel demonstration         |
+| FR-15: Validate vehicle ownership              | Customer, Vehicle, ServiceAppointment, RepairEstimate, Repair, Invoice      | Vehicle.CustomerID FK; ownership-validation logic before protected operations                            | Vehicle-ownership rejection demonstration                  |
+| FR-16: Prevent technician scheduling conflicts | Technician → ServiceAppointment                                             | `sp_CreateServiceAppointment`; technician/date lookup/index                                              | T-05                                                       |
+| FR-17: Store estimate and invoice line items   | RepairEstimate, EstimateLineItem, Invoice, InvoiceLineItem                  | EstimateLineItem composite PK; line-item FKs; quantity/unit-price CHECK constraints                      | Multiple estimate/invoice line-item creation demonstration |
+| FR-18: Protect finalized records               | RepairEstimate, Invoice                                                     | Status checks/procedure logic preventing modification after finalization                                 | T-13                                                       |
+| FR-19: Enforce valid status transitions        | ServiceAppointment, Repair, RepairEstimate, Invoice                         | Status CHECK constraints + procedure/application validation                                              | T-19                                                       |
+| FR-20: Use transactions for repair completion  | Repair, PartsUsage, Part, AuditLog as applicable                            | `sp_CompleteRepair`; START TRANSACTION, COMMIT, ROLLBACK                                                 | T-09; T-18                                                 |
