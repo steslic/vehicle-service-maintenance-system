@@ -12,7 +12,7 @@
 
 ## 2. Design overview
 
-This project implements a relational database for an independent auto repair shop. The database will manage customers, vehicles, technicians, service appointments, repairs, repair estimates, estimate line items, parts, parts usage, invoices, invoice line items, user accounts, and audit records. It will use MySQL and will support service appointment scheduling, technician assignment, repair and parts recording, estimate and invoice management, maintenance history retrieval, audit logging, and reports on shop workload, common repairs, low parts inventory, and parts revenue. The design consists of 13 related tables and enforces data integrity through primary keys, foreign keys, unique constraints, check constraints, and database transaction controls.
+This project implements a relational database for an independent auto repair shop. The database will manage customers, vehicles, technicians, service appointments, repairs, repair estimates, estimate line items, parts, parts usage, invoices, invoice line items, user accounts, and audit records. It will use MySQL and will support service appointment scheduling, technician assignment, repair and parts recording, estimate and invoice management, maintenance history retrieval, audit logging, and reports on shop workload, common repairs, low parts inventory, and parts revenue. The design consists of 13 related tables and enforces data integrity through primary keys, foreign keys, unique constraints, check constraints, triggers, stored procedures, and database transaction controls.
 
 ## 3. Technical environment
 
@@ -422,6 +422,7 @@ NewValue
 - FR-16 and BR-09 prevent technician scheduling conflicts.
 - BR-04 prevents duplicate active appointments for the same vehicle/date/time.
 - BR-05 restricts appointment status to approved values.
+- trg_ServiceAppointment_Status_Validate enforces valid status transitions (FR-14, FR-19). trg_ServiceAppointment_Audit records important changes (FR-08).
 
 ### Table: Repair
 
@@ -445,6 +446,7 @@ NewValue
 - FR-04 supports retrieving the vehicle maintenance history.
 - FR-20 requires repair completion and related updates to occur as one database transaction.
 - BR-05 restricts repair status to approved values.
+- trg_Repair_Status_Validate enforces valid status transitions (FR-19). trg_Repair_Audit records creation, completion, and status changes (FR-08).
 
 ### Table: RepairEstimate
 
@@ -469,6 +471,7 @@ NewValue
 - FR-18 prevents finalized estimates from being directly updated or deleted.
 - FR-19 enforces valid estimate statuses and transitions.
 - SEC-01 requires manager approval before finalization and protects finalized estimates from modification.
+- trg_RepairEstimate_Validate blocks updates and deletes after finalization (FR-18). trg_RepairEstimate_Audit records approvals and status changes (FR-08).
 
 ### Table: EstimateLineItem
 
@@ -487,6 +490,7 @@ NewValue
 
 - FR-17 requires repair estimates to store line-item details including description, quantity, unit price, and line total.
 - Each EstimateLineItem must belong to exactly one RepairEstimate.
+- trg_EstimateLineItem_Validate blocks inserts, updates, and deletes once the parent estimate is finalized (FR-18).
 
 ### Table: Part
 
@@ -511,6 +515,7 @@ NewValue
 - FR-13 requires inventory quantity to be reduced when parts usage is recorded.
 - BR-10 prevents negative quantity on hand.
 - RQ-04 compares quantity on hand with the minimum inventory level.
+- trg_PartInventory_Audit records quantity changes (FR-08, FR-13).
 
 ### Table: PartsUsage
 
@@ -530,13 +535,11 @@ NewValue
 #### Rules implemented by this table:
 
 - FR-03 supports recording parts used during repairs.
-
-<!-- -->
-
 - FR-12 validates sufficient inventory before parts usage is recorded.
 - FR-13 reduces inventory when parts usage is recorded.
 - BR-03 resolves the Repair-to-Part many-to-many relationship through PartsUsage.
 - BR-10 prevents parts usage from reducing quantity on hand below zero.
+- trg_PartsUsage_Audit records additions, updates, and reversals (FR-08).
 
 ### Table: Invoice
 
@@ -561,6 +564,7 @@ NewValue
 - FR-17 requires invoices to contain line-item details.
 - FR-18 prevents finalized invoices from being directly updated or deleted.
 - FR-19 enforces valid invoice status values and transitions.
+- trg_Invoice_Validate blocks updates and deletes after finalization (FR-18). trg_Invoice_Audit records changes and finalization (FR-08).
 
 ### Table: InvoiceLineItem
 
@@ -579,6 +583,7 @@ NewValue
 
 - FR-17 requires invoices to store line-item details including description, quantity, unit price, and line total.
 - Each InvoiceLineItem must belong to exactly one invoice.
+- trg_InvoiceLineItem_Validate blocks inserts, updates, and deletes once the parent invoice is finalized (FR-18).
 
 ### Table: UserAccount
 
@@ -620,7 +625,7 @@ NewValue
 - FR-08 requires audit entries for important creates, updates, completions, cancellations, approvals, finalizations, status changes, technician reassignments, inventory adjustments, and parts-usage changes.
 - Each audit entry records the responsible user, timestamp, action, affected entity, affected record identifier, and relevant old/new values.
 - SEC-03 requires important changes to service appointments, repairs, repair estimates, and invoices to be auditable.
-- AuditLog records should not be directly modified by ordinary users.
+- trg_AuditLog_Protect rejects all UPDATE and DELETE operations, so audit rows are append-only (BR-07, SEC-03).
 
 ## 8. Normalization Analysis
 
@@ -634,35 +639,45 @@ The database is designed to satisfy First Normal Form, Second Normal Form, and T
 
 ## 9. Integrity, validation, and business-rule enforcement
 
-| Business rule ID | Rule                                                                          | Technical implementation                                                                                | Verification method                                                                                        |
-| ---------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| BR-01            | Each major record must have a unique identifier.                              | PRIMARY KEY constraints on each table.                                                                  | Attempt to insert a duplicate primary-key value and verify that MySQL rejects it.                          |
-| BR-02            | Each vehicle must belong to exactly one customer.                             | Vehicle.CustomerID is NOT NULL and a foreign key to customer(CustomerID)                                | Attempt to insert a vehicle with a nonexistent CustomerID and verify rejection.                            |
-| BR-03            | Repairs and parts have a many-to-many relationship.                           | PartsUsage junction table with foreign keys to Repair and Part.                                         | Insert multiple parts for one repair and the same part for multiple repairs, then query the relationships. |
-| BR-04            | Duplicate active appointments for the same vehicle/date/time are not allowed. | Controlled procedure or validation logic checks for an existing active appointment before insertion.    | Attempt to create a duplicate active appointment and verify rejection.                                     |
-| BR-05            | Status values must use allowed values.                                        | CHECK constraints on the Status columns of ServiceAppointment, Repair, RepairEstimate, and Invoice.     | Attempt to insert an invalid status value and verify rejection.                                            |
-| BR-06            | Only authorized roles may create or modify protected records.                 | MySQL roles/privileges, protected views, and/or stored procedures.                                      | Attempt an allowed action with an authorized role and the same action with an unauthorized role.           |
-| BR-07            | Important changes must be auditable.                                          | AuditLog table plus triggers or controlled procedures that insert audit records.                        | Perform an audited update and verify the corresponding AuditLog row is created.                            |
-| BR-08            | Multi-step repair completion must either fully succeed or fully roll back.    | Stored procedure using START TRANSACTION, COMMIT, and ROLLBACK.                                         | Force one step to fail and verify that none of the earlier changes remain.                                 |
-| BR-09            | A technician cannot be assigned to conflicting active appointments.           | Procedure or validation query checks technician/date/time conflicts before insert/update.               | Attempt to assign one technician to two active appointments at the same time and verify rejection.         |
-| BR-10            | Parts usage cannot reduce inventory below zero.                               | Procedure/trigger checks QuantityOnHand \>= QuantityUsed before recording usage and updating inventory. | Attempt to use more parts than are available and verify rejection with inventory unchanged.                |
+| Business rule ID | Rule                                                                          | Technical implementation                                                                                     | Verification method                                                                                        |
+| ---------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| BR-01            | Each major record must have a unique identifier.                              | PRIMARY KEY constraints on each table.                                                                       | Attempt to insert a duplicate primary-key value and verify that MySQL rejects it.                          |
+| BR-02            | Each vehicle must belong to exactly one customer.                             | Vehicle.CustomerID is NOT NULL and a foreign key to customer(CustomerID)                                     | Attempt to insert a vehicle with a nonexistent CustomerID and verify rejection.                            |
+| BR-03            | Repairs and parts have a many-to-many relationship.                           | PartsUsage junction table with foreign keys to Repair and Part.                                              | Insert multiple parts for one repair and the same part for multiple repairs, then query the relationships. |
+| BR-04            | Duplicate active appointments for the same vehicle/date/time are not allowed. | sp_CreateServiceAppointment checks for an existing active appointment for the same vehicle before inserting. | Attempt to create a duplicate active appointment and verify rejection.                                     |
+| BR-05            | Status values must use allowed values.                                        | CHECK constraints on the Status columns of ServiceAppointment, Repair, RepairEstimate, and Invoice.          | Attempt to insert an invalid status value and verify rejection.                                            |
+| BR-06            | Only authorized roles may create or modify protected records.                 | MySQL roles/privileges, protected views, and/or stored procedures.                                           | Attempt an allowed action with an authorized role and the same action with an unauthorized role.           |
+| BR-07            | Important changes must be auditable.                                          | AuditLog table, audit triggers, and trg_AuditLog_Protect.                                                    | Perform an audited update and verify the corresponding AuditLog row is created.                            |
+| BR-08            | Multi-step repair completion must either fully succeed or fully roll back.    | Stored procedure using START TRANSACTION, COMMIT, and ROLLBACK.                                              | Force one step to fail and verify that none of the earlier changes remain.                                 |
+| BR-09            | A technician cannot be assigned to conflicting active appointments.           | sp_CreateServiceAppointment checks technician/date/time conflicts before insert.                             | Attempt to assign one technician to two active appointments at the same time and verify rejection.         |
+| BR-10            | Parts usage cannot reduce inventory below zero.                               | Procedure/trigger checks QuantityOnHand \>= QuantityUsed before recording usage and updating inventory.      | Attempt to use more parts than are available and verify rejection with inventory unchanged.                |
 
 ## 10. Database objects and SQL design
 
-| Object type      | Object name                                  | Purpose                                                                                                                                               | Related requirements                                   |
-| ---------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| View             | `vw_VehicleServiceHistory`                   | Displays completed repairs and parts used for a selected vehicle.                                                                                     | FR-04, RQ-02                                           |
-| View             | `vw_TechnicianWorkload`                      | Displays service appointments assigned to each technician for workload reporting.                                                                     | FR-06, RQ-05                                           |
-| Stored procedure | `sp_CreateServiceAppointment`                | Checks vehicle ownership, duplicate appointments, and technician conflicts before creating an appointment.                                            | FR-02, FR-05, FR-16, BR-04, BR-09                      |
-| Stored procedure | `sp_CompleteRepair`                          | Completes a repair, records part usage, updates inventory, writes required audit records, and commits or rolls back the operation as one transaction. | FR-03, FR-08, FR-12, FR-13, FR-20, BR-07, BR-08, BR-10 |
-| Trigger          | `trg_ServiceAppointment_Audit`               | Automatically creates an AuditLog record when important service-appointment data is changed.                                                          | FR-08, SEC-03                                          |
-| Trigger          | `trg_Invoice_Audit`                          | Automatically records important invoice changes and finalization activity.                                                                            | FR-08, FR-18, SEC-03                                   |
-| Trigger          | `trg_RepairEstimate_Audit`                   | Automatically records important repair-estimate changes, approvals, finalization, and status changes in AuditLog.                                     | FR-08, FR-18, SEC-03                                   |
-| Trigger          | `trg_PartInventory_Audit`                    | Automatically records inventory quantity changes in the log.                                                                                          | FR-08, FR-13, SEC-03                                   |
-| Index            | `idx_ServiceAppointment_DateTime`            | Supports appointment queries filtered by date and time.                                                                                               | RQ-01                                                  |
-| Index            | `idx_ServiceAppointment_Technician_DateTime` | Supports technician workload queries and scheduling-conflict checks using technician and appointment time.                                            | FR-06, FR-16, RQ-05                                    |
-| Index            | `idx_ServiceAppointment_Vehicle_DateTime`    | Supports duplicate/conflicting appointment checks for the same vehicle at the same date and time.                                                     | FR-02, BR-04                                           |
-| Index            | `idx_AuditLog_Entity_Record`                 | Supports audit-history lookups for a specific business record in chronological order.                                                                 | FR-08, SEC-03                                          |
+| Object type      | Object name                                  | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                | Related requirements                                   |
+| ---------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| View             | `vw_VehicleServiceHistory`                   | Displays completed repairs and parts used for a selected vehicle.                                                                                                                                                                                                                                                                                                                                                                                      | FR-04, RQ-02                                           |
+| View             | `vw_TechnicianWorkload`                      | Displays service appointments assigned to each technician for workload reporting.                                                                                                                                                                                                                                                                                                                                                                      | FR-06, RQ-05                                           |
+| Stored procedure | `sp_CreateServiceAppointment`                | Validates required appointment data (future date/time, positive duration, non-empty description), confirms the vehicle belongs to the customer, the technician is active, and the creating user exists; rejects the appointment if it overlaps an active appointment for the same vehicle or technician, using each appointment's estimated duration; then inserts it with status Scheduled and returns the new AppointmentID, all in one transaction. | FR-02, FR-05, FR-16, BR-04, BR-09                      |
+| Stored procedure | `sp_CompleteRepair`                          | Validates the repair, appointment, technician, and recording user; records usage for zero or more parts passed as a JSON array; reduces inventory; and marks the repair completed. All changes commit or roll back as one transaction. Audit records are written by the table triggers.                                                                                                                                                                | FR-03, FR-08, FR-12, FR-13, FR-20, BR-07, BR-08, BR-10 |
+| Trigger          | `trg_ServiceAppointment_Audit`               | Automatically creates an AuditLog record when important service-appointment data is changed.                                                                                                                                                                                                                                                                                                                                                           | FR-08, SEC-03                                          |
+| Trigger          | `trg_Invoice_Audit`                          | Automatically records important invoice changes and finalization activity.                                                                                                                                                                                                                                                                                                                                                                             | FR-08, FR-18, SEC-03                                   |
+| Trigger          | `trg_RepairEstimate_Audit`                   | Automatically records important repair-estimate changes, approvals, finalization, and status changes in AuditLog.                                                                                                                                                                                                                                                                                                                                      | FR-08, FR-18, SEC-03                                   |
+| Trigger          | `trg_PartInventory_Audit`                    | Automatically records inventory quantity changes in AuditLog.                                                                                                                                                                                                                                                                                                                                                                                          | FR-08, FR-13, SEC-03                                   |
+| Trigger          | `trg_Repair_Audit`                           | Automatically records repair creation, updates, completion, and status changes in AuditLog.                                                                                                                                                                                                                                                                                                                                                            | FR-03, FR-08, SEC-03                                   |
+| Trigger          | `trg_PartsUsage_Audit`                       | Automatically records parts usage additions, updates, and reversals in AuditLog.                                                                                                                                                                                                                                                                                                                                                                       | FR-08, FR-12, FR-13, SEC-03                            |
+| Trigger          | `trg_Invoice_Validate`                       | Allows only the Draft to Finalized status transition, requires a finalizing user and finalization date/time when an invoice is finalized, and prevents finalized invoices from being modified or deleted.                                                                                                                                                                                                                                              | FR-18, FR-19, SEC-01                                   |
+| Trigger          | `trg_RepairEstimate_Validate`                | Prevents finalized repair estimates from being modified or deleted, enforces valid status transitions, and requires the approving user to have the Manager role before an estimate can be approved or finalized.                                                                                                                                                                                                                                       | FR-18, FR-19, SEC-01                                   |
+| Trigger          | `trg_Repair_Status_Validate`                 | Prevents invalid repair status transitions, such as changing a completed repair back to In Progress.                                                                                                                                                                                                                                                                                                                                                   | FR-19, BR-05                                           |
+| Trigger          | `trg_ServiceAppointment_Status_Validate`     | Prevents invalid appointment status transitions, such as changing a completed appointment back to Scheduled.                                                                                                                                                                                                                                                                                                                                           | FR-14, FR-19, BR-05                                    |
+| Trigger          | `trg_InvoiceLineItem_Validate`               | Prevents invoice line items from being inserted, updated, or deleted after the associated invoice has been finalized.                                                                                                                                                                                                                                                                                                                                  | FR-17, FR-18, SEC-01                                   |
+| Trigger          | `trg_EstimateLineItem_Validate`              | Prevents estimate line items from being inserted, updated, or deleted after the associated repair estimate has been finalized.                                                                                                                                                                                                                                                                                                                         | FR-17, FR-18, SEC-01                                   |
+| Trigger          | `trg_AuditLog_Protect`                       | Prevents existing audit records from being updated or deleted, preserving audit history.                                                                                                                                                                                                                                                                                                                                                               | FR-08, SEC-03, BR-07                                   |
+| Index            | `idx_ServiceAppointment_DateTime`            | Supports appointment queries filtered by date and time.                                                                                                                                                                                                                                                                                                                                                                                                | RQ-01                                                  |
+| Index            | `idx_ServiceAppointment_Technician_DateTime` | Supports technician workload queries and scheduling-conflict checks using technician and appointment time.                                                                                                                                                                                                                                                                                                                                             | FR-06, FR-16, RQ-05                                    |
+| Index            | `idx_ServiceAppointment_Vehicle_DateTime`    | Supports duplicate/conflicting appointment checks for the same vehicle at the same date and time.                                                                                                                                                                                                                                                                                                                                                      | FR-02, BR-04                                           |
+| Index            | `idx_AuditLog_Entity_Record`                 | Supports audit-history lookups for a specific business record in chronological order.                                                                                                                                                                                                                                                                                                                                                                  | FR-08, SEC-03                                          |
+| Index            | `idx_Repair_Status_Type`                     | Supports the common repairs report by filtering completed repairs and grouping them by repair type.                                                                                                                                                                                                                                                                                                                                                    | FR-09, RQ-03                                           |
 
 ## 11. Query and report design
 
