@@ -1,0 +1,346 @@
+--------------
+-- Vehicle Service and Maintenance Management System
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- docs/performance/perf_data.sql
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- Generates a large data set for performance measurement.
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+--
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- Run AFTER building files 01-06 (do not run 07_tests.sql first):
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+--   cd sql
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+--   cat 01_schema.sql 02_indexes.sql 03_views_reports.sql 04_procedures.sql \
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+--       05_triggers_roles.sql 06_sample_data.sql | /usr/local/mysql/bin/mysql -u root -p
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+--   /usr/local/mysql/bin/mysql -u root -p < ../docs/performance/perf_data.sql
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+--
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- Or run it in MySQL Workbench with Safe Updates turned off; the Output panel
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- shows the duration of each statement (record these in README.md).
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+--
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- All rows go through the normal triggers (validation and audit), so the
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- load itself is a large batch transaction test. Expect it to take a minute
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- or more. Rebuild from 01 afterwards to return to the normal sample data.
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+USE vehicle_service_maintenance
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET SESSION cte_max_recursion_depth = 100000
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+SET @app_user_id = 1      -- Manager performs the bulk load (audited)
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+SET @rows = 20000         -- number of appointments and repairs to generate
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- Step 1: 20,000 appointments (one large INSERT ... SELECT batch)
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- About 25 per day starting 2024-01-01, spread across vehicles 1-5 and
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- technicians 1-2. Inserted as In Progress so repairs can be attached.
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+INSERT INTO ServiceAppointment (VehicleID, TechnicianID, CreatedByUserID,
+        AppointmentDateTime, Status, ServiceRequestDescription,
+        EstimatedDuration, CreationTimestamp)
+WITH RECURSIVE seq (n) AS (
+    SELECT 1
+    UNION ALL
+    SELECT n + 1 FROM seq WHERE n < @rows
+)
+SELECT 1 + MOD(n, 5),
+       1 + MOD(n, 2),
+       2,
+       TIMESTAMP('2024-01-01 08:00:00')
+           + INTERVAL (n DIV 25) DAY
+           + INTERVAL (MOD(n, 25) * 20) MINUTE,
+       'In Progress',
+       CONCAT('Perf test appointment ', n),
+       60,
+       NOW()
+FROM seq
+--------------
+
+Query OK, 20000 rows affected (0.519 sec)
+Records: 20000  Duplicates: 0  Warnings: 0
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- Step 2: one Open repair per performance appointment
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- Eight repair types so the Common Repairs report has groups to count.
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+INSERT INTO Repair (AppointmentID, RepairDateTime, RepairType,
+                    RepairDescription, LaborHours, Status)
+SELECT AppointmentID,
+       AppointmentDateTime,
+       ELT(1 + MOD(AppointmentID, 8),
+           'Oil Change', 'Brake Service', 'Tire Rotation', 'Battery Replacement',
+           'Diagnostic', 'Tune-Up', 'Filter Replacement', 'Ignition Service'),
+       'Perf test repair',
+       1.00,
+       'Open'
+FROM ServiceAppointment
+WHERE ServiceRequestDescription LIKE 'Perf test appointment%'
+--------------
+
+Query OK, 20000 rows affected (0.613 sec)
+Records: 20000  Duplicates: 0  Warnings: 0
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- Step 3: large batch update (Open -> In Progress) through the triggers
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+UPDATE Repair
+SET Status = 'In Progress'
+WHERE RepairDescription = 'Perf test repair'
+--------------
+
+Query OK, 20000 rows affected (0.886 sec)
+Rows matched: 20000  Changed: 20000  Warnings: 0
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- Step 4: complete half of them (In Progress -> Completed)
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+UPDATE Repair r
+JOIN ServiceAppointment sa ON sa.AppointmentID = r.AppointmentID
+SET r.Status = 'Completed',
+    r.CompletedByTechnicianID = sa.TechnicianID,
+    r.CompletionDateTime = r.RepairDateTime + INTERVAL 1 HOUR
+WHERE r.RepairDescription = 'Perf test repair'
+  AND MOD(r.RepairID, 2) = 0
+--------------
+
+Query OK, 10000 rows affected (0.481 sec)
+Rows matched: 10000  Changed: 10000  Warnings: 0
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- Step 5: refresh optimizer statistics after the bulk load
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+ANALYZE TABLE ServiceAppointment, Repair, AuditLog
+--------------
+
++------------------------------------------------+---------+----------+----------+
+| Table                                          | Op      | Msg_type | Msg_text |
++------------------------------------------------+---------+----------+----------+
+| vehicle_service_maintenance.serviceappointment | analyze | status   | OK       |
+| vehicle_service_maintenance.repair             | analyze | status   | OK       |
+| vehicle_service_maintenance.auditlog           | analyze | status   | OK       |
++------------------------------------------------+---------+----------+----------+
+3 rows in set (0.011 sec)
+
+--------------
+SET @app_user_id = NULL
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- Data volume after the load (record these in README.md)
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+-- ---------------------------------------------------------------------
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT 'ServiceAppointment' AS TableName, COUNT(*) AS RowsNow FROM ServiceAppointment
+UNION ALL SELECT 'Repair',   COUNT(*) FROM Repair
+UNION ALL SELECT 'AuditLog', COUNT(*) FROM AuditLog
+--------------
+
++--------------------+---------+
+| TableName          | RowsNow |
++--------------------+---------+
+| ServiceAppointment |   20010 |
+| Repair             |   20008 |
+| AuditLog           |   70062 |
++--------------------+---------+
+3 rows in set (0.005 sec)
+
+Bye
