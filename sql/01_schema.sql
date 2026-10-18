@@ -2,6 +2,7 @@
 -- 01_schema.sql
 -- Creates the database schema and all 13 core tables
 
+DROP DATABASE IF EXISTS vehicle_service_maintenance;
 
 CREATE DATABASE IF NOT EXISTS vehicle_service_maintenance;
 
@@ -112,7 +113,7 @@ CREATE TABLE ServiceAppointment (
     AppointmentDateTime DATETIME NOT NULL,
     Status VARCHAR(20) NOT NULL,
     ServiceRequestDescription VARCHAR(500) NOT NULL,
-    EstimatedDuration INT NULL,
+    EstimatedDuration INT NOT NULL,
     CreationTimestamp DATETIME NOT NULL,
     CancellationDate DATE NULL,
     CancellationReason VARCHAR(500) NULL,

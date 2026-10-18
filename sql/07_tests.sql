@@ -325,6 +325,21 @@ CALL tst_ExpectError (
     'foreign key constraint fails'
 );
 
+-- T-35 / BR-01: duplicate primary key
+CALL tst_ExpectError('T-35', 'Duplicate primary key is rejected',
+    'INSERT INTO Customer (CustomerID, Name, Phone, Email) VALUES (1, ''Duplicate Key'', ''555-0000'', NULL)',
+    'Duplicate entry');
+
+-- T-36 / FR-01: duplicate VIN (UNIQUE)
+CALL tst_ExpectError('T-36', 'Duplicate VIN is rejected',
+    'INSERT INTO Vehicle (CustomerID, VIN, Make, Model, `Year`) VALUES (1, ''1HGCV1F34LA012345'', ''Honda'', ''Civic'', 2022)',
+    'Duplicate entry');
+
+-- T-37 / FR-01: required value missing (NOT NULL)
+CALL tst_ExpectError('T-37', 'Customer without a name is rejected',
+    'INSERT INTO Customer (Name, Phone, Email) VALUES (NULL, ''555-0000'', NULL)',
+    'cannot be null');
+
 -- T-06 / BR-05: invalid status value
 CALL tst_ExpectError('T-06', 'Appointment with an invalid status value is rejected',
     'INSERT INTO ServiceAppointment (VehicleID, TechnicianID, CreatedByUserID, AppointmentDateTime, Status, ServiceRequestDescription, EstimatedDuration, CreationTimestamp) VALUES (1, 1, 2, NOW(), ''Pending'', ''Invalid status test'', 60, NOW())',

@@ -433,13 +433,36 @@ BEGIN
     END IF;
 END //
 
-
 -- ---------------------------------------------------------------------
 -- trg_Repair_Status_Validate
 -- FRD transitions: Open -> In Progress -> Completed; Open/In Progress -> Cancelled
 -- Completed and cancelled repairs cannot be modified (FRD entitlements).
 -- Technicians may only change repairs on their own assigned appointments.
 -- ---------------------------------------------------------------------
+DROP TRIGGER IF EXISTS trg_Repair_Status_Validate_bi //
+CREATE TRIGGER trg_Repair_Status_Validate_bi
+BEFORE INSERT ON Repair
+FOR EACH ROW
+BEGIN
+    DECLARE v_ApptStatus VARCHAR(20) DEFAULT NULL;
+
+    -- New repairs must start as Open (FRD transitions)
+    IF NEW.Status <> 'Open' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'New repairs must start in Open status';
+    END IF;
+
+    -- Repairs cannot be added to a closed appointment
+    SELECT Status INTO v_ApptStatus
+    FROM ServiceAppointment
+    WHERE AppointmentID = NEW.AppointmentID;
+
+    IF v_ApptStatus IN ('Completed', 'Cancelled', 'No Show') THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Repairs cannot be added to a completed, cancelled, or no-show appointment';
+    END IF;
+END //
+
 DROP TRIGGER IF EXISTS trg_Repair_Status_Validate_bu //
 CREATE TRIGGER trg_Repair_Status_Validate_bu
 BEFORE UPDATE ON Repair
