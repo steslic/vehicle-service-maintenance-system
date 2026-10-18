@@ -89,7 +89,7 @@ cat 01_schema.sql 02_indexes.sql 03_views_reports.sql 04_procedures.sql \
 The last output of the build is the test summary. A successful build shows:
 
 ```
-PASS    40
+PASS    43
 ```
 
 and no `FAIL` rows. To see each test individually, look at the full result table printed just before the summary.

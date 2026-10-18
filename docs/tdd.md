@@ -7,8 +7,8 @@
 | Project title  | Vehicle Service and Maintenance Management System |
 | Prepared by    | Sebastian Teslic                                  |
 | Course/section | 01:198:437                                        |
-| Date           | 10/15/2026                                        |
-| Version        | 1.1                                               |
+| Date           | 10/18/2026                                        |
+| Version        | 1.2                                               |
 
 ## 2. Design overview
 
@@ -16,13 +16,15 @@ This project implements a relational database for an independent auto repair sho
 
 ## 3. Technical environment
 
-| Component                  | Selected technology/tool | Purpose                               |
-| -------------------------- | ------------------------ | ------------------------------------- |
-| Database management system | MySQL 8.0.16 or later    | Store and manage relational data      |
-| Database client/IDE        | MySQL Workbench          | Design, execute, and test SQL         |
-| Modeling tool              | draw.io                  | Create ERD and schema diagram         |
-| Source control             | GitHub                   | Version SQL scripts and documentation |
-| Operating environment      | MacOS                    | Development and testing environment   |
+| Component                  | Selected technology/tool                            | Purpose                                          |
+| -------------------------- | --------------------------------------------------- | ------------------------------------------------ |
+| Database management system | MySQL 8.0.16 or later (developed on 26.7.0), InnoDB | Store and manage relational data, transactions   |
+| SQL client                 | MySQL command-line client; MySQL Workbench          | Build the schema, run scripts, and test SQL      |
+| Editor                     | Visual Studio Code                                  | Write SQL scripts and Markdown documentation     |
+| Modeling tool              | draw.io                                             | Create the ERD                                   |
+| Source control             | Git and GitHub; release tag `v1.0`                  | Version scripts and documentation; tagged builds |
+| Documentation              | Markdown                                            | FRD, TDD, README, and performance records        |
+| Operating environment      | macOS                                               | Development and testing environment              |
 
 ## 4. Architecture and scope
 
@@ -77,246 +79,46 @@ The complete ER diagram is maintained in the project repository under the `docs/
 ## 6. Relational schema
 
 ```text
-Customer(
+Customer(CustomerID PK, Name, Phone, Email)
 
-CustomerID PK,
+Vehicle(VehicleID PK, CustomerID FK -> Customer, VIN UNIQUE, Make, Model, Year)
 
-Name,
+Technician(TechnicianID PK, Name, Phone, Email UNIQUE, ActiveStatus)
 
-Phone,
+UserAccount(UserID PK, TechnicianID FK -> Technician UNIQUE NULL, Username UNIQUE, Name, RoleType)
 
-Email
-)
+ServiceAppointment(AppointmentID PK, VehicleID FK -> Vehicle, TechnicianID FK -> Technician,
+                   CreatedByUserID FK -> UserAccount, AppointmentDateTime, Status,
+                   ServiceRequestDescription, EstimatedDuration, CreationTimestamp,
+                   CancellationDate, CancellationReason)
 
-Vehicle(
+Repair(RepairID PK, AppointmentID FK -> ServiceAppointment,
+       CompletedByTechnicianID FK -> Technician NULL, RepairDateTime, RepairType,
+       RepairDescription, LaborHours, Status, CompletionDateTime)
 
-VehicleID PK,
+RepairEstimate(EstimateID PK, AppointmentID FK -> ServiceAppointment UNIQUE,
+               CreatedByUserID FK -> UserAccount, ApprovedByUserID FK -> UserAccount NULL,
+               EstimateDate, Status, TotalAmount, ApprovalDateTime)
 
-CustomerID FK -\> Customer(CustomerID),
+EstimateLineItem((EstimateID FK -> RepairEstimate, LineNumber) PK,
+                 Description, Quantity, UnitPrice, LineTotal)
 
-VIN UNIQUE,
+Invoice(InvoiceID PK, AppointmentID FK -> ServiceAppointment UNIQUE,
+        CreatedByUserID FK -> UserAccount, FinalizedByUserID FK -> UserAccount NULL,
+        InvoiceDate, Status, TotalAmount, FinalizationDateTime)
 
-Make,
+InvoiceLineItem(InvoiceLineItemID PK, InvoiceID FK -> Invoice,
+                Description, Quantity, UnitPrice, LineTotal)
 
-Model,
+Part(PartID PK, PartNumber UNIQUE, PartName, QuantityOnHand, UnitCost,
+     UnitSellingPrice, MinimumInventoryLevel, ActiveStatus)
 
-Year
+PartsUsage(PartsUsageID PK, RepairID FK -> Repair, PartID FK -> Part,
+           RecordedByUserID FK -> UserAccount, QuantityUsed,
+           UnitSellingPriceAtTimeOfUse, UnitCostAtTimeOfUse, RecordedDateTime)
 
-)
-
-Technician(
-
-TechnicianID PK,
-
-Name,
-
-Phone,
-
-Email UNIQUE,
-
-ActiveStatus
-
-)
-
-ServiceAppointment(
-
-AppointmentID PK,
-
-VehicleID FK -\> Vehicle(VehicleID),
-
-TechnicianID FK -\> Technician(TechnicianID),
-
-CreatedByUserID FK -\> UserAccount(UserID),
-
-AppointmentDateTime,
-
-Status,
-
-ServiceRequestDescription,
-
-EstimatedDuration,
-
-CreationTimestamp,
-
-CancellationDate,
-
-CancellationReason
-
-)
-
-Repair(
-
-RepairID PK,
-
-AppointmentID FK -\> ServiceAppointment(AppointmentID),
-
-CompletedByTechnicianID FK -\> Technician(TechnicianID),
-
-RepairDateTime,
-
-RepairType,
-
-RepairDescription,
-
-LaborHours,
-
-Status,
-
-CompletionDateTime
-
-)
-
-RepairEstimate(
-
-EstimateID PK,
-
-AppointmentID FK -\> ServiceAppointment(AppointmentID),
-
-CreatedByUserID FK -\> UserAccount(UserID),
-
-ApprovedByUserID FK -\> UserAccount(UserID),
-
-EstimateDate,
-
-Status,
-
-TotalAmount,
-
-ApprovalDateTime,
-
-UNIQUE(AppointmentID)
-
-)
-
-EstimateLineItem(
-
-EstimateID PK, FK -\> RepairEstimate(EstimateID),
-
-LineNumber PK,
-
-Description,
-
-Quantity,
-
-UnitPrice,
-
-LineTotal
-
-)
-
-Part(
-
-PartID PK,
-
-PartNumber UNIQUE,
-
-PartName,
-
-QuantityOnHand,
-
-UnitCost,
-
-UnitSellingPrice,
-
-MinimumInventoryLevel,
-
-ActiveStatus
-
-)
-
-PartsUsage(
-
-PartsUsageID PK,
-
-RepairID FK -\> Repair(RepairID),
-
-PartID FK -\> Part(PartID),
-
-RecordedByUserID FK -\> UserAccount(UserID),
-
-QuantityUsed,
-
-UnitSellingPriceAtTimeOfUse,
-
-UnitCostAtTimeOfUse,
-
-RecordedDateTime
-
-)
-
-Invoice(
-
-InvoiceID PK,
-
-AppointmentID FK -\> ServiceAppointment(AppointmentID),
-
-CreatedByUserID FK -\> UserAccount(UserID),
-
-FinalizedByUserID FK -\> UserAccount(UserID),
-
-InvoiceDate,
-
-Status,
-
-TotalAmount,
-
-FinalizationDateTime,
-
-UNIQUE(AppointmentID)
-
-)
-
-InvoiceLineItem(
-
-InvoiceLineItemID PK,
-
-InvoiceID FK -\> Invoice(InvoiceID),
-
-Description,
-
-Quantity,
-
-UnitPrice,
-
-LineTotal
-
-)
-
-UserAccount(
-
-UserID PK,
-
-TechnicianID FK -\> Technician(TechnicianID),
-
-Username UNIQUE,
-
-Name,
-
-RoleType,
-
-UNIQUE(TechnicianID)
-
-)
-
-AuditLog(
-
-AuditLogID PK,
-
-UserID FK -\> UserAccount(UserID),
-
-Timestamp,
-
-Action,
-
-AffectedEntity,
-
-AffectedRecordID,
-
-PreviousValue,
-
-NewValue
-
-)
+AuditLog(AuditLogID PK, UserID FK -> UserAccount, Timestamp, Action,
+         AffectedEntity, AffectedRecordID, PreviousValue, NewValue)
 ```
 
 ### ER-to-Relational Mapping Documentation
@@ -409,7 +211,7 @@ NewValue
 | AppointmentDateTime       | DATETIME     | No           | None                                                                                              | Scheduled appointment date/time      |
 | Status                    | VARCHAR(20)  | No           | CHECK (Status IN (‘Scheduled’, ‘Checked In’, ‘In Progress’, ‘Completed’, ‘Cancelled’, ‘No Show’)) | Current appointment status           |
 | ServiceRequestDescription | VARCHAR(500) | No           | None                                                                                              | Description of the requested service |
-| EstimatedDuration         | INT          | Yes          | CHECK (EstimatedDuration \> 0)                                                                    | Estimated duration in minutes        |
+| EstimatedDuration         | INT          | No           | CHECK (EstimatedDuration \> 0)                                                                    | Estimated duration in minutes        |
 | CreationTimestamp         | DATETIME     | No           | None                                                                                              | Date/time appointment was created    |
 | CancellationDate          | DATE         | Yes          | None                                                                                              | Date appointment was cancelled       |
 | CancellationReason        | VARCHAR(500) | Yes          | None                                                                                              | Reason for cancellation              |
@@ -641,7 +443,7 @@ The database is designed to satisfy First Normal Form, Second Normal Form, and T
 
 | Business rule ID | Rule                                                                          | Technical implementation                                                                                                                                                                                                                                                                                                    | Verification method                                                                                        |
 | ---------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| BR-01            | Each major record must have a unique identifier.                              | PRIMARY KEY constraints on each table.                                                                                                                                                                                                                                                                                      | Attempt to insert a duplicate primary-key value and verify that MySQL rejects it.                          |
+| BR-01            | Each major record must have a unique identifier.                              | PRIMARY KEY constraints on each table.                                                                                                                                                                                                                                                                                      | Attempt to insert a duplicate primary-key value and verify that MySQL rejects it (T-35).                   |
 | BR-02            | Each vehicle must belong to exactly one customer.                             | Vehicle.CustomerID is NOT NULL and a foreign key to customer(CustomerID)                                                                                                                                                                                                                                                    | Attempt to insert a vehicle with a nonexistent CustomerID and verify rejection.                            |
 | BR-03            | Repairs and parts have a many-to-many relationship.                           | PartsUsage junction table with foreign keys to Repair and Part.                                                                                                                                                                                                                                                             | Insert multiple parts for one repair and the same part for multiple repairs, then query the relationships. |
 | BR-04            | Duplicate active appointments for the same vehicle/date/time are not allowed. | sp_CreateServiceAppointment checks for an existing active appointment for the same vehicle before inserting.                                                                                                                                                                                                                | Attempt to create a duplicate active appointment and verify rejection.                                     |
@@ -679,7 +481,7 @@ The database is designed to satisfy First Normal Form, Second Normal Form, and T
 | Index            | `idx_ServiceAppointment_Vehicle_DateTime`    | Supports duplicate/conflicting appointment checks for the same vehicle at the same date and time.                                                                                                                                                                                                                                                                                                                                                      | FR-02, BR-04                                    |
 | Index            | `idx_AuditLog_Entity_Record`                 | Supports audit-history lookups for a specific business record in chronological order.                                                                                                                                                                                                                                                                                                                                                                  | FR-08, SEC-03                                   |
 | Index            | `idx_Repair_Status_Type`                     | Supports the common repairs report by filtering completed repairs and grouping them by repair type.                                                                                                                                                                                                                                                                                                                                                    | FR-09, RQ-03                                    |
-| Role             | `role_service_advisor`                       | Creates and updates customers, vehicles, appointments, technician assignments, non-finalized estimates, and non-finalized invoices; creates repair records; finalizes invoices; cannot approve estimates or modify AuditLog.                                                                                                                                                                                                                           | FR-07, BR-06, SEC-02                            |
+| Role             | `role_service_advisor`                       | Creates and updates customers, vehicles, appointments, technician assignments, non-finalized estimates, and non-finalized invoices; creates repair records; finalizes approved estimates and invoices; cannot approve estimates or modify AuditLog.                                                                                                                                                                                                    | FR-07, BR-06, SEC-02                            |
 | Role             | `role_technician`                            | Views assigned appointments; may update only the Status column of Repair (limited to the transitions allowed by `trg_Repair_Status_Validate`); completes repairs through `sp_CompleteRepair`; has no other direct write access to protected tables.                                                                                                                                                                                                    | FR-07, BR-06, SEC-02                            |
 | Role             | `role_manager`                               | Has broad operational and reporting access, including estimate approval, technician reassignment, invoice finalization, and inventory adjustments; has SELECT-only access to AuditLog.                                                                                                                                                                                                                                                                 | FR-07, BR-06, SEC-01, SEC-02                    |
 
@@ -712,13 +514,65 @@ Because MySQL stored procedures do not support array parameters, `sp_CompleteRep
 - Production-grade security hardening, automated backup scheduling, disaster recovery, and enterprise-scale security monitoring are outside the scope of this course implementation unless specifically required.
 - Inventory quantity changes require an adjustment reason in the session variable `@adj_reason`, which `trg_PartInventory_Audit` stores in the audit record's NewValue. Managers set it before manual adjustments; `sp_CompleteRepair` sets it automatically (for example, "Parts usage for repair 12") and clears it afterward.
 
-### Performance and scalability considerations
+### Performance and index design
 
-Indexes will be used on frequently searched appointment dates, technician assignments, and foreign-key columns, which InnoDB indexes automatically, to support common reads and joins. Query performance will be evaluated using EXPLAIN. Multi-step repair completion will use transactions to maintain consistency during updates. Large batch inserts and data extracts should be processed in manageable batches to reduce long-running locks and excessive transaction size. As appointment, repair, and audit data grows, indexes on frequently filtered foreign keys, dates, and status columns can be reviewed and adjusted based on query plans. Enterprise-scale performance tuning is outside the scope of this class implementation.
+Indexes were chosen from the common access paths: appointments by date (RQ-01), by technician and date (workload report and scheduling-conflict checks), and by vehicle and date (vehicle conflict checks); completed repairs grouped by type (RQ-03); and audit history for one record (`idx_AuditLog_Entity_Record`). InnoDB indexes foreign-key columns automatically, which supports the joins in every report.
+
+Each index adds a small cost to inserts and updates on its table. ServiceAppointment and Repair rows change status only a few times, while reports and conflict checks read them constantly, so the read benefit outweighs the write cost. AuditLog is the most write-heavy table (one row per audited change), so it has a single secondary index, chosen for record-history lookups.
+
+Indexes were verified with `EXPLAIN` and `EXPLAIN ANALYZE` on a 20,000-row data set. Three optimization records are in `docs/performance/`:
+
+| Record                           | Change                                           | Result                                                                       |
+| -------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| OPT-01 (RQ-03, aggregate report) | Covering index on Repair (Status, RepairType)    | Full scan of 20,008 rows → index lookup of 10,004 entries; 7.84 ms → 2.21 ms |
+| OPT-02 (RQ-01)                   | `DATE(AppointmentDateTime)` rewritten as a range | Full scan of 20,010 rows → index range scan of 25 rows; 7.23 ms → 0.06 ms    |
+| OPT-03 (audit extract)           | OFFSET paging replaced with keyset paging        | 50,020 rows read → 20; 24.2 ms → 0.16 ms                                     |
+
+The bulk load in `perf_data.sql` applied 70,000 inserts and updates through the validation and audit triggers in about 2.5 seconds. Very large loads and extracts should be split into smaller committed batches to keep transactions and lock times short.
+
+### Resiliency, recovery, and data integrity
+
+**Atomic operations.** `sp_CreateServiceAppointment` and `sp_CompleteRepair` run inside `START TRANSACTION ... COMMIT`. An EXIT handler rolls back and re-raises any error, so either every related insert, update, and audit row is saved or none is. Audit rows are written by triggers inside the same transaction, so they roll back with it (T-26, T-33).
+
+**Duplicate submissions and conflicting updates.** The booking procedure locks the technician and vehicle rows with `SELECT ... FOR UPDATE` before checking for overlapping appointments, so two simultaneous bookings for the same slot cannot both succeed. `sp_CompleteRepair` locks the repair and every requested part before checking inventory, so two completions cannot spend the same stock. `UNIQUE(AppointmentID)` on RepairEstimate and Invoice prevents a second estimate or invoice for one appointment.
+
+**Invalid state transitions.** Validation triggers allow only the FRD status transitions for appointments, repairs, estimates, and invoices; anything else is rejected before the row changes (T-06, T-19, T-24).
+
+**History preservation.** Business records are closed by status changes (Cancelled, No Show, Rejected, Expired, Finalized) rather than deleted. Foreign keys use RESTRICT, so parent rows with history cannot be removed. Finalized estimates, finalized invoices, their line items, and audit rows cannot be updated or deleted.
+
+**Cancellation and expiration.** Appointments move Scheduled → Cancelled with CancellationDate and CancellationReason, or to No Show. Repairs can be cancelled from Open or In Progress. Estimates move from Pending Approval to Rejected or Expired. Expiration is a status update made by staff; an automatic expiry job is outside the scope.
+
+**Failure and retry.** If a step fails, including a deadlock (MySQL error 1213) or lock wait timeout, the whole transaction is rolled back and the database is unchanged, so the client can safely retry. Retrying an operation that already succeeded is rejected by the state checks (for example, a repair that is already Completed) instead of creating duplicate data.
+
+**Correction.** Draft records can be edited. Inventory corrections are made by a Manager with a required reason (`@adj_reason`) and are audited. Finalized invoices cannot be changed; correcting one would require a separate credit or adjustment record, which is outside the scope of this implementation.
+
+**Recovery.** InnoDB's redo log keeps committed transactions after a crash and rolls back uncommitted ones on restart. Production backups and point-in-time recovery are outside the scope; the development database can be recreated at any time from the repository with `build.sql`.
+
+### Audit and traceability design
+
+**Audited events.** Creates, updates, deletes, and status changes on ServiceAppointment, Repair, RepairEstimate, Invoice, and PartsUsage; estimate approval and rejection; invoice and estimate finalization; appointment cancellation and rescheduling; technician reassignment; and every inventory quantity change.
+
+**Audit content.** Each AuditLog row records the acting user (UserID, from `@app_user_id`), timestamp, action, affected entity, affected record ID, and the previous and new values as JSON. Inventory changes also store the reason. Updates that change nothing are not logged (T-23).
+
+**Context.** AuditLog has no separate transaction identifier. Related rows are linked through the entity and record ID and through the inventory reason (for example, "Parts usage for repair 6" ties Part changes to the repair). A TransactionID column is a possible future enhancement.
+
+**Failures.** Rejected operations roll back, so they leave no audit rows (T-33). Privilege denials are reported by MySQL but are not recorded in AuditLog; recording them would require the server's audit log feature, which is outside the scope.
+
+**Protection.** Audit rows are inserted only by triggers through `sp_WriteAuditLog`. No role has INSERT, UPDATE, or DELETE on AuditLog; Managers have SELECT only, and `trg_AuditLog_Protect` rejects any update or delete (T-22).
+
+**Reconstructing history.** The full lifecycle of a record is read in time order using `idx_AuditLog_Entity_Record`:
+
+```sql
+SELECT a.`Timestamp`, u.Name, u.RoleType, a.Action, a.PreviousValue, a.NewValue
+FROM AuditLog a
+JOIN UserAccount u ON u.UserID = a.UserID
+WHERE a.AffectedEntity = 'Repair' AND a.AffectedRecordID = 6
+ORDER BY a.`Timestamp`, a.AuditLogID;
+```
 
 ## 13. Test plan and acceptance criteria
 
-Automated tests are in `07_tests.sql` and run as part of `build.sql`. Expected rejections are caught and checked against the expected error message, so a test passes only if it fails for the right reason. Tests run in three groups (read-only reports, rejected operations, then operations that change data) so that no test alters data another test depends on. T-11 is run manually because MySQL privileges apply to the logged-in account. Latest run: 40 of 40 automated checks passed.
+Automated tests are in `07_tests.sql` and run as part of `build.sql`. Expected rejections are caught and checked against the expected error message, so a test passes only if it fails for the right reason. Tests run in three groups (read-only reports, rejected operations, then operations that change data) so that no test alters data another test depends on. T-11 is run manually because MySQL privileges apply to the logged-in account. Latest run: 43 of 43 automated checks passed.
 
 ### Test harness
 
@@ -769,12 +623,15 @@ Statements are passed as text and run with `PREPARE`/`EXECUTE`. Results are stor
 | T-32    | FR-15            | Create an appointment for a vehicle that belongs to a different customer.                                                                        | Operation is rejected because the vehicle does not belong to the customer.                                                                                   | PASS: Rejected with "Vehicle does not belong to the customer."                                                                                                                                                  |
 | T-33    | BR-07 / FR-08    | Count AuditLog rows before and after all rejected and rolled-back operations.                                                                    | The count is unchanged; failed operations leave no audit rows.                                                                                               | PASS: 62 audit rows before and after.                                                                                                                                                                           |
 | T-34    | RQ-04            | Run the Low Parts Inventory report.                                                                                                              | Brake Rotor and Spark Plug are listed as below their minimum inventory level.                                                                                | PASS: 2 parts below minimum (Brake Rotor, Spark Plug).                                                                                                                                                          |
+| T-35    | BR-01            | Insert a customer with an existing CustomerID.                                                                                                   | Insert is rejected by the primary key constraint.                                                                                                            | PASS: Rejected with "Duplicate entry '1' for key 'customer.PRIMARY'."                                                                                                                                           |
+| T-36    | FR-01            | Insert a vehicle with a VIN that already exists.                                                                                                 | Insert is rejected by the UNIQUE constraint on VIN.                                                                                                          | PASS: Rejected with "Duplicate entry '1HGCV1F34LA012345' for key 'vehicle.VIN'."                                                                                                                                |
+| T-37    | FR-01            | Insert a customer with no name.                                                                                                                  | Insert is rejected by the NOT NULL constraint.                                                                                                               | PASS: Rejected with "Column 'Name' cannot be null."                                                                                                                                                             |
 
 ## 14. Requirement traceability
 
 | Functional Requirement                         | Tables/relationships                                                        | Constraints or objects                                                                                                                                                      | Query/report/test evidence                                    |
 | ---------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| FR-01: Store customer and vehicle records      | Customer → Vehicle                                                          | CustomerID PK; VehicleID PK; Vehicle.CustomerID FK; VIN UNIQUE                                                                                                              | T-01; customer/vehicle insert demonstration                   |
+| FR-01: Store customer and vehicle records      | Customer → Vehicle                                                          | CustomerID PK; VehicleID PK; Vehicle.CustomerID FK; VIN UNIQUE                                                                                                              | T-01; T-35; T-36; T-37; customer/vehicle insert demonstration |
 | FR-02: Create service appointments             | Vehicle → ServiceAppointment ← Technician; UserAccount → ServiceAppointment | Appointment PK; vehicle/technician/user FKs; `sp_CreateServiceAppointment`; required-field/status checks                                                                    | T-03; T-04; T-14; RQ-01 Daily Service Appointments            |
 | FR-03: Record completed repairs                | ServiceAppointment → Repair ← Technician                                    | RepairID PK; AppointmentID FK; technician FK; repair-status checks; `sp_CompleteRepair`; `trg_Repair_Status_Validate`                                                       | T-08; T-18; T-19; T-31; RQ-02 Vehicle Service History         |
 | FR-04: Display vehicle service history         | Vehicle → ServiceAppointment → Repair → PartsUsage → Part                   | FKs connecting vehicle, appointment, repair, and parts usage; `vw_VehicleServiceHistory`                                                                                    | T-15; RQ-02 Vehicle Service History                           |
