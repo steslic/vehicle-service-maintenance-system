@@ -751,14 +751,15 @@ CREATE ROLE 'role_service_advisor', 'role_technician', 'role_manager';
 
 -- ---------------------------------------------------------------------
 -- Service Advisor
--- Creates/updates customers, vehicles, appointments, technician assignments,
+-- Creates/updates customers, vehicles, appointments through
+-- sp_CreateServiceAppointment (no direct INSERT), technician assignments,
 -- non-finalized estimates and invoices; creates repair records; finalizes
 -- invoices. Cannot approve or reject estimates (trigger), modify repairs
 -- after creation, or access AuditLog.
 -- ---------------------------------------------------------------------
 GRANT SELECT, INSERT, UPDATE         ON vehicle_service_maintenance.Customer           TO 'role_service_advisor';
 GRANT SELECT, INSERT, UPDATE         ON vehicle_service_maintenance.Vehicle            TO 'role_service_advisor';
-GRANT SELECT, INSERT, UPDATE         ON vehicle_service_maintenance.ServiceAppointment TO 'role_service_advisor';
+GRANT SELECT, UPDATE                 ON vehicle_service_maintenance.ServiceAppointment TO 'role_service_advisor';
 GRANT SELECT, INSERT                 ON vehicle_service_maintenance.Repair             TO 'role_service_advisor';
 GRANT SELECT, INSERT, UPDATE         ON vehicle_service_maintenance.RepairEstimate     TO 'role_service_advisor';
 GRANT SELECT, INSERT, UPDATE, DELETE ON vehicle_service_maintenance.EstimateLineItem   TO 'role_service_advisor';
@@ -789,7 +790,8 @@ GRANT EXECUTE ON PROCEDURE vehicle_service_maintenance.sp_CompleteRepair TO 'rol
 
 -- ---------------------------------------------------------------------
 -- Manager
--- Broad operational and reporting access: reassigns technicians, approves
+-- Broad operational and reporting access: creates appointments
+-- through sp_CreateServiceAppointment, reassigns technicians, approves
 -- or rejects estimates, finalizes invoices, adjusts inventory.
 -- SELECT-only on AuditLog. Finalized records and audit rows remain
 -- protected by triggers.
@@ -797,7 +799,7 @@ GRANT EXECUTE ON PROCEDURE vehicle_service_maintenance.sp_CompleteRepair TO 'rol
 GRANT SELECT, INSERT, UPDATE         ON vehicle_service_maintenance.Customer           TO 'role_manager';
 GRANT SELECT, INSERT, UPDATE         ON vehicle_service_maintenance.Vehicle            TO 'role_manager';
 GRANT SELECT, INSERT, UPDATE         ON vehicle_service_maintenance.Technician         TO 'role_manager';
-GRANT SELECT, INSERT, UPDATE         ON vehicle_service_maintenance.ServiceAppointment TO 'role_manager';
+GRANT SELECT, UPDATE                 ON vehicle_service_maintenance.ServiceAppointment TO 'role_manager';
 GRANT SELECT, INSERT, UPDATE         ON vehicle_service_maintenance.Repair             TO 'role_manager';
 GRANT SELECT, INSERT, UPDATE         ON vehicle_service_maintenance.RepairEstimate     TO 'role_manager';
 GRANT SELECT, INSERT, UPDATE, DELETE ON vehicle_service_maintenance.EstimateLineItem   TO 'role_manager';
