@@ -230,17 +230,17 @@ AuditLog(AuditLogID PK, UserID FK -> UserAccount, Timestamp, Action,
 
 **Purpose:** Stores one row for each repair associated with a service appointment.
 
-| Column                  | Data type    | Null allowed? | Key/constraint                                                      | Description/example                            |
-| ----------------------- | ------------ | ------------- | ------------------------------------------------------------------- | ---------------------------------------------- |
-| RepairID                | INT          | No            | PK, AUTO_INCREMENT                                                  | Unique repair identifier                       |
-| AppointmentID           | INT          | No            | FK → ServiceAppointment(AppointmentID)                              | Appointment associated with the repair         |
-| RepairType              | VARCHAR(100) | No            | None                                                                | Type of repair                                 |
-| RepairDescription       | VARCHAR(500) | No            | None                                                                | Description of repair work                     |
-| Status                  | VARCHAR(20)  | No            | CHECK (Status IN (‘Open’, ‘In Progress’, ‘Completed’, ‘Cancelled’)) | Repair status                                  |
-| CompletedByTechnicianID | INT          | Yes           | FK → Technician(TechnicianID)                                       | Technician who completed the repair            |
-| RepairDateTime          | DATETIME     | No            | None                                                                | Date/time the repair was recorded or performed |
-| LaborHours              | DECIMAL(5,2) | Yes           | CHECK (LaborHours \>= 0)                                            | Labor hours spent on the repair                |
-| CompletionDateTime      | DATETIME     | Yes           | None                                                                | Date/time the repair was completed             |
+| Column                  | Data type    | Null allowed? | Key/constraint                                                                                         | Description/example                            |
+| ----------------------- | ------------ | ------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| RepairID                | INT          | No            | PK, AUTO_INCREMENT                                                                                     | Unique repair identifier                       |
+| AppointmentID           | INT          | No            | FK → ServiceAppointment(AppointmentID)                                                                 | Appointment associated with the repair         |
+| RepairType              | VARCHAR(100) | No            | None                                                                                                   | Type of repair                                 |
+| RepairDescription       | VARCHAR(500) | No            | None                                                                                                   | Description of repair work                     |
+| Status                  | VARCHAR(20)  | No            | CHECK (Status IN (‘Open’, ‘In Progress’, ‘Completed’, ‘Cancelled’)); chk_Repair_Completion (see below) | Repair status                                  |
+| CompletedByTechnicianID | INT          | Yes           | FK → Technician(TechnicianID); required when Status = 'Completed' (chk_Repair_Completion)              | Technician who completed the repair            |
+| RepairDateTime          | DATETIME     | No            | None                                                                                                   | Date/time the repair was recorded or performed |
+| LaborHours              | DECIMAL(5,2) | Yes           | CHECK (LaborHours \>= 0)                                                                               | Labor hours spent on the repair                |
+| CompletionDateTime      | DATETIME     | Yes           | Required when Status = 'Completed' (chk_Repair_Completion)                                             | Date/time the repair was completed             |
 
 #### Rules implemented by this table:
 
@@ -248,6 +248,7 @@ AuditLog(AuditLogID PK, UserID FK -> UserAccount, Timestamp, Action,
 - FR-04 supports retrieving the vehicle maintenance history.
 - FR-20 requires repair completion and related updates to occur as one database transaction.
 - BR-05 restricts repair status to approved values.
+- chk_Repair_Completion: CHECK (Status <> 'Completed' OR (CompletedByTechnicianID IS NOT NULL AND CompletionDateTime IS NOT NULL)). Only sp_CompleteRepair sets these fields, so technicians can complete repairs only through the procedure (FR-20, T-38).
 - trg_Repair_Status_Validate enforces valid status transitions (FR-19). trg_Repair_Audit records creation, completion, and status changes (FR-08).
 
 ### Table: RepairEstimate
@@ -626,6 +627,7 @@ Statements are passed as text and run with `PREPARE`/`EXECUTE`. Results are stor
 | T-35    | BR-01            | Insert a customer with an existing CustomerID.                                                                                                   | Insert is rejected by the primary key constraint.                                                                                                            | PASS: Rejected with "Duplicate entry '1' for key 'customer.PRIMARY'."                                                                                                                                           |
 | T-36    | FR-01            | Insert a vehicle with a VIN that already exists.                                                                                                 | Insert is rejected by the UNIQUE constraint on VIN.                                                                                                          | PASS: Rejected with "Duplicate entry '1HGCV1F34LA012345' for key 'vehicle.VIN'."                                                                                                                                |
 | T-37    | FR-01            | Insert a customer with no name.                                                                                                                  | Insert is rejected by the NOT NULL constraint.                                                                                                               | PASS: Rejected with "Column 'Name' cannot be null."                                                                                                                                                             |
+| T-38    | FR-03 / FR-20    | As the assigned technician, set a repair's status to Completed with a direct UPDATE.                                                             | Update is rejected; repairs must be completed through sp_CompleteRepair.                                                                                     | PASS: Rejected with "Check constraint 'chk_Repair_Completion' is violated."                                                                                                                                     |
 
 ## 14. Requirement traceability
 

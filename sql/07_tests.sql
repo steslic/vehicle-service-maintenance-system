@@ -454,6 +454,12 @@ CALL tst_ExpectError (
     'Technicians may only update their own assigned repairs'
 );
 
+-- T-38 / FR-03, FR-20: a repair cannot be marked Completed without sp_CompleteRepair
+SET @app_user_id = 4;   -- Carla, assigned to repair 7
+CALL tst_ExpectError('T-38', 'Repair cannot be completed by a direct status update',
+    'UPDATE Repair SET Status = ''Completed'' WHERE RepairID = 7',
+    'chk_Repair_Completion');
+
 -- T-28a / FR-13: inventory adjustment without a reason
 SET
     @app_user_id = 1;

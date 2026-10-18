@@ -170,6 +170,13 @@ CREATE TABLE Repair (
 
     CHECK (LaborHours >= 0),
 
+    -- A Completed repair must record who completed it and when, which only
+    -- sp_CompleteRepair sets, so technicians cannot bypass it (T-38)
+    CONSTRAINT chk_Repair_Completion CHECK (
+        Status <> 'Completed'
+        OR (CompletedByTechnicianID IS NOT NULL AND CompletionDateTime IS NOT NULL)
+    ),
+
     FOREIGN KEY (AppointmentID)
         REFERENCES ServiceAppointment(AppointmentID),
 
