@@ -11,7 +11,9 @@ README.md                  This file
 docs/
   tdd.md                   Technical Design Document
   FRD.md                   Functional Requirements Document
-  vehicle-service-erd.drawio Data model / ER diagram (draw.io)
+  vehicle-service-erd.drawio  Data model / ER diagram (draw.io)
+  vehicle-service-erd.svg  Data model / ER diagram (svg)
+  erd.md                   ER diagram explanation
   performance/             Performance analysis and optimization records
 sql/
   build.sql                Runs every script below in order
@@ -181,7 +183,7 @@ Report queries RQ-01 to RQ-06 are in `03_views_reports.sql`. Open the file in My
 
 ## Performance Analysis
 
-See [`docs/performance/README.md`](docs/performance/README.md). It describes how to load a 20,000-row data set (`perf_data.sql`) and contains three optimization records with `EXPLAIN` / `EXPLAIN ANALYZE` before-and-after results. Rebuild the database afterwards to remove the performance data. |
+See [`docs/performance/README.md`](docs/performance/README.md). It describes how to load a 20,000-row data set (`perf_data.sql`) and contains three optimization records with `EXPLAIN` / `EXPLAIN ANALYZE` before-and-after results. Rebuild the database afterwards to remove the performance data.
 
 ## AI Assistance
 
