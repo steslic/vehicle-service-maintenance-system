@@ -426,6 +426,16 @@ BEGIN
             SET MESSAGE_TEXT = 'Invalid appointment status transition';
         END IF;
 
+        -- An appointment cannot be closed while it still has unfinished work:
+        -- every repair must be Completed or Cancelled first
+        IF NEW.Status IN ('Completed', 'Cancelled', 'No Show')
+           AND EXISTS (SELECT 1 FROM Repair
+                       WHERE AppointmentID = OLD.AppointmentID
+                         AND Status IN ('Open', 'In Progress')) THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Appointment has open repairs: complete or cancel them first';
+        END IF;
+
         -- Record the cancellation date if the caller did not supply one
         IF NEW.Status = 'Cancelled' THEN
             SET NEW.CancellationDate = COALESCE(NEW.CancellationDate, CURDATE());
