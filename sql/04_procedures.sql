@@ -263,9 +263,11 @@ BEGIN
         SET MESSAGE_TEXT = 'Appointment for this repair does not exist';
     END IF;
 
-    IF v_AppointmentStatus IN ('Cancelled', 'No Show', 'Completed') THEN
+    -- Work can only be completed while the vehicle is in the shop: the
+    -- appointment must be In Progress (not Scheduled, Checked In, or closed)
+    IF v_AppointmentStatus <> 'In Progress' THEN
         SIGNAL SQLSTATE '45000'
-        SET MESSAGE_TEXT = 'Appointment is cancelled, completed, or marked no show';
+        SET MESSAGE_TEXT = 'Appointment must be In Progress to complete a repair';
     END IF;
 
         IF p_TechnicianID IS NULL OR NOT (v_AssignedTechnicianID <=> p_TechnicianID) THEN
