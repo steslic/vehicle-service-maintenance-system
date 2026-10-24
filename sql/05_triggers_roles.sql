@@ -444,6 +444,87 @@ BEGIN
 END //
 
 -- ---------------------------------------------------------------------
+-- trg_ServiceAppointment_Schedule_Validate
+-- Rescheduling, changing the duration, or reassigning the technician of an
+-- active appointment runs the same checks as sp_CreateServiceAppointment
+-- (FR-14, FR-16, BR-04, BR-09): valid duration, active technician, and no
+-- overlap with another active appointment for the same vehicle or the
+-- same technician. The appointment's own row is excluded from the check.
+-- Runs after the status trigger, so closed appointments are rejected first.
+-- ---------------------------------------------------------------------
+DROP TRIGGER IF EXISTS trg_ServiceAppointment_Schedule_Validate_bu //
+CREATE TRIGGER trg_ServiceAppointment_Schedule_Validate_bu
+BEFORE UPDATE ON ServiceAppointment
+FOR EACH ROW
+FOLLOWS trg_ServiceAppointment_Status_Validate_bu
+BEGIN
+    DECLARE v_Count INT DEFAULT 0;
+    DECLARE v_EndDateTime DATETIME; -- when the new appointment ends 
+
+    -- appointment is active and the caller is changing the date/time, duration, or technician
+    IF NEW.Status IN ('Scheduled', 'Checked In', 'In Progress')
+       AND (NOT (OLD.AppointmentDateTime <=> NEW.AppointmentDateTime)
+            OR NOT (OLD.EstimatedDuration <=> NEW.EstimatedDuration)
+            OR NOT (OLD.TechnicianID      <=> NEW.TechnicianID)) THEN
+
+        IF NEW.EstimatedDuration > 1440 THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Invalid appointment information';
+        END IF;
+
+        -- Lock the technician and vehicle rows, as the booking procedure
+        -- does, so a reschedule and a booking cannot both take one slot
+        SELECT COUNT(*) INTO v_Count
+        FROM Technician
+        WHERE TechnicianID = NEW.TechnicianID AND ActiveStatus = 1
+        FOR UPDATE;
+
+        IF v_Count = 0 THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Technician does not exist or is inactive';
+        END IF;
+
+        SELECT COUNT(*) INTO v_Count
+        FROM Vehicle
+        WHERE VehicleID = NEW.VehicleID
+        FOR UPDATE;
+
+        SET v_EndDateTime = DATE_ADD(NEW.AppointmentDateTime,
+                                     INTERVAL NEW.EstimatedDuration MINUTE);
+
+        -- Another active appointment for the same vehicle that overlaps
+        SELECT COUNT(*) INTO v_Count
+        FROM ServiceAppointment
+        WHERE VehicleID = NEW.VehicleID
+          AND AppointmentID <> NEW.AppointmentID
+          AND Status IN ('Scheduled', 'Checked In', 'In Progress')
+          AND AppointmentDateTime < v_EndDateTime
+          AND DATE_ADD(AppointmentDateTime, INTERVAL EstimatedDuration MINUTE)
+              > NEW.AppointmentDateTime;
+
+        IF v_Count > 0 THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Vehicle already has a conflicting appointment';
+        END IF;
+
+        -- Another active appointment for the same technician that overlaps
+        SELECT COUNT(*) INTO v_Count
+        FROM ServiceAppointment
+        WHERE TechnicianID = NEW.TechnicianID
+          AND AppointmentID <> NEW.AppointmentID
+          AND Status IN ('Scheduled', 'Checked In', 'In Progress')
+          AND AppointmentDateTime < v_EndDateTime
+          AND DATE_ADD(AppointmentDateTime, INTERVAL EstimatedDuration MINUTE)
+              > NEW.AppointmentDateTime;
+
+        IF v_Count > 0 THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Technician already has a conflicting appointment';
+        END IF;
+    END IF;
+END //
+
+-- ---------------------------------------------------------------------
 -- trg_Repair_Status_Validate
 -- FRD transitions: Open -> In Progress -> Completed; Open/In Progress -> Cancelled
 -- Completed and cancelled repairs cannot be modified (FRD entitlements).
