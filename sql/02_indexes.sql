@@ -23,3 +23,7 @@ ON AuditLog (AffectedEntity, AffectedRecordID, `Timestamp`);
 -- Helps find completed repairs grouped by repair type 
 CREATE INDEX idx_Repair_Status_Type
 ON Repair (`Status`, RepairType);
+
+-- Find every audit row written by one procedure call
+CREATE INDEX idx_AuditLog_Context
+ON AuditLog (ContextID);

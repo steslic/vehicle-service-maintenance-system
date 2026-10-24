@@ -630,6 +630,24 @@ CALL tst_ExpectError (
     'Vehicle does not belong to the customer'
 );
 
+-- ---------------------------------------------------------------------
+-- Boundary tests: values just outside the allowed range are rejected
+-- ---------------------------------------------------------------------
+-- T-39 / FR-02: duration one minute over the maximum (1440 = 24 hours)
+CALL tst_ExpectError('T-39', 'Appointment duration of 1441 minutes is rejected',
+    'CALL sp_CreateServiceAppointment(1, 1, 2, 2, @t03 + INTERVAL 5 DAY, ''Boundary test'', 1441)',
+    'Invalid appointment information');
+
+-- T-40 / FR-02: duration of zero (minimum is 1)
+CALL tst_ExpectError('T-40', 'Appointment duration of 0 minutes is rejected',
+    'CALL sp_CreateServiceAppointment(1, 1, 2, 2, @t03 + INTERVAL 5 DAY, ''Boundary test'', 0)',
+    'Invalid appointment information');
+
+-- T-41 / FR-12, BR-10: part quantity of zero (minimum is 1)
+CALL tst_ExpectError('T-41', 'Part quantity of 0 is rejected',
+    'CALL sp_CompleteRepair(6, 1, 3, ''[{"partId": 2, "qty": 0}]'')',
+    'positive integer qty');
+
 -- T-09 / FR-20, BR-08: a multi-step repair transaction fails at its last step.
 -- Mirrors sp_CompleteRepair's steps: record usage, reduce inventory, then
 -- update the repair. The final step fails, and ROLLBACK undoes the earlier
@@ -827,6 +845,49 @@ CALL tst_ExpectError (
     'CALL sp_CreateServiceAppointment(2, 2, 1, 2, @t03 + INTERVAL 30 MINUTE, ''Technician conflict test'', 60)',
     'Technician already has a conflicting appointment'
 );
+
+-- ---------------------------------------------------------------------
+-- Boundary tests: values exactly at the edge of the allowed range succeed
+-- ---------------------------------------------------------------------
+-- T-42 / FR-02: minimum duration (1 minute) is accepted
+CALL tst_ExpectSuccess('T-42', 'Create appointment with a 1-minute duration',
+    'CALL sp_CreateServiceAppointment(1, 1, 2, 2, @t03 + INTERVAL 2 DAY, ''Boundary test: 1 minute'', 1)');
+
+-- 1 if the procedure worked 
+SET @c = (SELECT COUNT(*) FROM ServiceAppointment
+          WHERE VehicleID = 1 AND AppointmentDateTime = @t03 + INTERVAL 2 DAY
+            AND EstimatedDuration = 1);
+
+CALL tst_Assert('T-42', 'Appointment with a 1-minute duration was created',
+    @c = 1, CONCAT('Matching appointments: ', @c, ' (expected 1)'));
+
+-- T-43 / FR-02: maximum duration (1440 minutes) is accepted
+CALL tst_ExpectSuccess('T-43', 'Create appointment with a 1440-minute duration',
+    'CALL sp_CreateServiceAppointment(1, 1, 2, 2, @t03 + INTERVAL 3 DAY, ''Boundary test: 24 hours'', 1440)');
+
+SET @c = (SELECT COUNT(*) FROM ServiceAppointment
+          WHERE VehicleID = 1 AND AppointmentDateTime = @t03 + INTERVAL 3 DAY
+            AND EstimatedDuration = 1440);
+
+CALL tst_Assert('T-43', 'Appointment with a 1440-minute duration was created',
+    @c = 1, CONCAT('Matching appointments: ', @c, ' (expected 1)'));
+
+-- T-44 / BR-04, BR-09: one minute of overlap is still a conflict.
+-- T-03 booked vehicle 5 with Ben from @t03 for 90 minutes.
+CALL tst_ExpectError('T-44', 'Appointment starting 1 minute before the previous one ends is rejected',
+    'CALL sp_CreateServiceAppointment(1, 5, 1, 2, @t03 + INTERVAL 89 MINUTE, ''Boundary test: overlap'', 60)',
+    'conflicting appointment');
+
+-- T-45 / BR-04, BR-09: back-to-back booking (start = previous end) is allowed
+CALL tst_ExpectSuccess('T-45', 'Create back-to-back appointment',
+    'CALL sp_CreateServiceAppointment(1, 5, 1, 2, @t03 + INTERVAL 90 MINUTE, ''Boundary test: back to back'', 60)');
+
+SET @c = (SELECT COUNT(*) FROM ServiceAppointment
+          WHERE VehicleID = 5 AND TechnicianID = 1
+            AND AppointmentDateTime = @t03 + INTERVAL 90 MINUTE);
+
+CALL tst_Assert('T-45', 'Appointment starting exactly when the previous one ends was created',
+    @c = 1, CONCAT('Matching appointments: ', @c, ' (expected 1)'));
 
 -- T-10 / FR-08, SEC-03: an audited update creates the correct audit record
 SET
@@ -1153,6 +1214,64 @@ CALL tst_Assert (
         ' (expected 5)'
     )
 );
+
+-- T-47 / FR-08, SEC-03: every audit row written by one procedure call shares
+-- one context ID. Uses the rows T-18's sp_CompleteRepair call just wrote.
+SET @ctx_rows = (SELECT COUNT(*) FROM AuditLog WHERE AuditLogID > @a);
+SET @ctx_ids  = (SELECT COUNT(DISTINCT ContextID) FROM AuditLog WHERE AuditLogID > @a);
+SET @ctx_null = (SELECT COUNT(*) FROM AuditLog WHERE AuditLogID > @a AND ContextID IS NULL);
+
+CALL tst_Assert('T-47', 'Audit rows from one procedure call share one context ID',
+    @ctx_rows = 5 AND @ctx_ids = 1 AND @ctx_null = 0,
+    CONCAT('Audit rows: ', @ctx_rows, ', distinct context IDs: ', @ctx_ids,
+           ' (expected 1), rows without one: ', @ctx_null, ' (expected 0)'));
+
+-- A direct update outside a procedure has no context ID
+SET @c = (SELECT COUNT(*) FROM AuditLog
+          WHERE Action = 'Reschedule' AND AffectedRecordID = 8 AND ContextID IS NULL);
+
+CALL tst_Assert('T-47', 'Direct update outside a procedure has no context ID',
+    @c = 1, CONCAT('Reschedule rows with no context ID: ', @c, ' (expected 1)'));
+
+-- T-46 / FR-12, BR-10: using exactly the quantity on hand is allowed and
+-- leaves 0 in stock. Builds its own repair (vehicle 1, Carla) because
+-- repairs 6 and 7 are already completed above. Uses spark plugs.
+SET @t46 = @t03 + INTERVAL 6 DAY;
+
+CALL tst_ExpectSuccess('T-46', 'Book appointment for the stock boundary test',
+    'CALL sp_CreateServiceAppointment(1, 1, 2, 2, @t46, ''Boundary test: all spark plugs'', 60)');
+
+SET @appt46 = (SELECT AppointmentID FROM ServiceAppointment
+               WHERE VehicleID = 1 AND AppointmentDateTime = @t46);
+
+SET @app_user_id = 2;   -- Amy checks the vehicle in and opens the repair
+CALL tst_ExpectSuccess('T-46', 'Check in appointment',
+    'UPDATE ServiceAppointment SET Status = ''Checked In'' WHERE AppointmentID = @appt46');
+CALL tst_ExpectSuccess('T-46', 'Start appointment',
+    'UPDATE ServiceAppointment SET Status = ''In Progress'' WHERE AppointmentID = @appt46');
+CALL tst_ExpectSuccess('T-46', 'Open repair',
+    'INSERT INTO Repair (AppointmentID, RepairDateTime, RepairType, RepairDescription, LaborHours, Status) VALUES (@appt46, @t46, ''Ignition Service'', ''Replace all spark plugs'', 1.00, ''Open'')');
+
+SET @repair46 = (SELECT RepairID FROM Repair WHERE AppointmentID = @appt46);
+
+SET @app_user_id = 4;   -- Carla starts her repair
+CALL tst_ExpectSuccess('T-46', 'Start repair',
+    'UPDATE Repair SET Status = ''In Progress'' WHERE RepairID = @repair46');
+
+SET @p5_before = (SELECT QuantityOnHand FROM Part WHERE PartID = 5);
+SET @parts46 = JSON_ARRAY(JSON_OBJECT('partId', 5, 'qty', @p5_before));
+
+CALL tst_ExpectSuccess('T-46', 'Complete repair using every spark plug in stock',
+    'CALL sp_CompleteRepair(@repair46, 2, 4, @parts46)');
+
+SET @p5_after = (SELECT QuantityOnHand FROM Part WHERE PartID = 5);
+SET @used = (SELECT QuantityUsed FROM PartsUsage WHERE RepairID = @repair46 AND PartID = 5);
+SET @status = (SELECT Status FROM Repair WHERE RepairID = @repair46);
+
+CALL tst_Assert('T-46', 'Quantity equal to stock accepted; inventory is now 0',
+    @p5_after = 0 AND @used = @p5_before AND @status = 'Completed',
+    CONCAT('Spark plug: ', @p5_before, ' -> ', @p5_after,
+           ', quantity used: ', @used, ', repair status: ', @status));
 
 SET
     @app_user_id = NULL;

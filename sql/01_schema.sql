@@ -343,6 +343,7 @@ CREATE TABLE AuditLog (
     AffectedRecordID INT NOT NULL,
     PreviousValue JSON NULL,
     NewValue JSON NULL,
+    ContextID CHAR(36) NULL, -- groups the audit rows written by one procedure call 
 
     PRIMARY KEY (AuditLogID),
 

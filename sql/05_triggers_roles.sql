@@ -35,11 +35,11 @@ BEGIN
 
     INSERT INTO AuditLog (
         UserID, `Timestamp`, Action, AffectedEntity,
-        AffectedRecordID, PreviousValue, NewValue
+        AffectedRecordID, PreviousValue, NewValue, ContextID
     )
     VALUES (
         @app_user_id, NOW(), p_Action, p_AffectedEntity,
-        p_AffectedRecordID, p_PreviousValue, p_NewValue
+        p_AffectedRecordID, p_PreviousValue, p_NewValue, @context_id
     );
 END //
 

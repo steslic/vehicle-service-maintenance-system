@@ -28,10 +28,14 @@ BEGIN
     BEGIN
         ROLLBACK;
         SET @app_user_id = NULL;
+        SET @context_id = NULL;
         RESIGNAL;
     END;
 
     START TRANSACTION;
+
+    -- one ID shared by every audit row written by the triggers during this procedure call
+    set @context_id = UUID();
 
     -- Validate required appointment information
     IF p_AppointmentDateTime IS NULL
@@ -150,6 +154,7 @@ BEGIN
 
     COMMIT;
     SET @app_user_id = NULL;
+    SET @context_id = NULL;
 
     SELECT v_AppointmentID AS AppointmentID;
 END //
@@ -185,10 +190,13 @@ BEGIN
         DROP TEMPORARY TABLE IF EXISTS tmp_RepairParts;
         SET @app_user_id = NULL;
         SET @adj_reason = NULL;
+        SET @context_id = NULL;
         RESIGNAL;
     END;
 
     START TRANSACTION;
+
+    SET @context_id = UUID();
 
     -- Lock the repair and check that it exists
     SELECT AppointmentID, Status
@@ -344,6 +352,7 @@ BEGIN
     COMMIT;
     SET @app_user_id = NULL;
     SET @adj_reason = NULL;
+    SET @context_id = NULL;
 
     SELECT p_RepairID AS CompletedRepairID;
 END //
