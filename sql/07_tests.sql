@@ -303,6 +303,21 @@ CALL tst_Assert (
     CONCAT('Parts below minimum: ', @c, ' (expected 2)')
 );
 
+-- T-49: technicians read only through the filtered views.
+-- The technician role has no grant on the ServiceAppointment or Repair
+-- tables, only on vw_MyAppointments and vw_MyRepairs.
+SET @base = (SELECT COUNT(*) FROM mysql.tables_priv
+             WHERE User = 'role_technician'
+               AND LOWER(Table_name) IN ('serviceappointment', 'repair'));
+
+SET @views = (SELECT COUNT(*) FROM mysql.tables_priv
+              WHERE User = 'role_technician'
+                AND LOWER(Table_name) IN ('vw_myappointments', 'vw_myrepairs'));
+
+CALL tst_Assert('T-49', 'Technician role reads only through the filtered views',
+    @base = 0 AND @views = 2,
+    CONCAT('Base-table grants: ', @base, ' (expected 0), view grants: ', @views, ' (expected 2)'));
+
 -- =====================================================================
 -- 2. OPERATIONS THAT MUST BE REJECTED (data must remain unchanged)
 -- =====================================================================

@@ -774,17 +774,18 @@ GRANT EXECUTE ON PROCEDURE vehicle_service_maintenance.sp_CreateServiceAppointme
 
 -- ---------------------------------------------------------------------
 -- Technician
--- Views appointments, vehicles, and parts; may update only Repair.Status
--- (transitions and ownership enforced by trigger); completes repairs through
--- sp_CompleteRepair. No access to customers, estimates, or invoices (SEC-02).
--- Note: MySQL privileges are table- and column-level, so technicians can
--- read all appointments, not only their own (documented limitation).
+-- Row-level access (SEC-02): reads only their own appointments and repairs
+-- through vw_MyAppointments and vw_MyRepairs, and changes Repair.Status only
+-- through vw_MyRepairs. No direct access to the ServiceAppointment or Repair
+-- tables. Transitions and ownership are still enforced by trigger; repairs
+-- are completed through sp_CompleteRepair. Views vehicles and parts.
+-- No access to customers, estimates, or invoices (SEC-02).
 -- ---------------------------------------------------------------------
-GRANT SELECT                  ON vehicle_service_maintenance.ServiceAppointment TO 'role_technician';
+GRANT SELECT                  ON vehicle_service_maintenance.vw_MyAppointments  TO 'role_technician';
+GRANT SELECT, UPDATE (Status) ON vehicle_service_maintenance.vw_MyRepairs       TO 'role_technician';
 GRANT SELECT                  ON vehicle_service_maintenance.Vehicle            TO 'role_technician';
 GRANT SELECT                  ON vehicle_service_maintenance.Part               TO 'role_technician';
 GRANT SELECT                  ON vehicle_service_maintenance.PartsUsage         TO 'role_technician';
-GRANT SELECT, UPDATE (Status) ON vehicle_service_maintenance.Repair             TO 'role_technician';
 GRANT SELECT ON vehicle_service_maintenance.vw_VehicleServiceHistory TO 'role_technician';
 GRANT EXECUTE ON PROCEDURE vehicle_service_maintenance.sp_CompleteRepair TO 'role_technician';
 

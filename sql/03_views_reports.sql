@@ -46,6 +46,50 @@ FROM Technician t
 LEFT JOIN ServiceAppointment sa
     ON t.TechnicianID = sa.TechnicianID;
 
+-- View 3: My appointments (technician row-level read access)
+-- Shows only the appointments assigned to the logged-in technician.
+CREATE OR REPLACE VIEW vw_MyAppointments AS
+SELECT
+    sa.AppointmentID,
+    sa.AppointmentDateTime,
+    sa.EstimatedDuration,
+    sa.Status,
+    sa.ServiceRequestDescription,
+    v.VehicleID,
+    v.VIN,
+    v.Make,
+    v.Model,
+    v.`Year`
+FROM ServiceAppointment sa
+JOIN Vehicle v
+    ON v.VehicleID = sa.VehicleID
+JOIN UserAccount ua
+    ON ua.TechnicianID = sa.TechnicianID
+WHERE ua.Username = SUBSTRING_INDEX(USER(), '@', 1);
+
+-- View 4: My repairs (technician row-level read and status update)
+-- Shows only repairs on appointments assigned to the logged-in technician.
+CREATE OR REPLACE VIEW vw_MyRepairs AS
+SELECT
+    r.RepairID,
+    r.AppointmentID,
+    r.RepairDateTime,
+    r.RepairType,
+    r.RepairDescription,
+    r.LaborHours,
+    r.Status,
+    r.CompletedByTechnicianID,
+    r.CompletionDateTime
+FROM Repair r
+WHERE r.AppointmentID IN (
+    SELECT sa.AppointmentID
+    FROM ServiceAppointment sa
+    JOIN UserAccount ua
+        ON ua.TechnicianID = sa.TechnicianID
+    WHERE ua.Username = SUBSTRING_INDEX(USER(), '@', 1)
+)
+WITH CHECK OPTION;
+
 
 -- RQ-01: Daily service appointments
 -- Shows appointments for a selected date
