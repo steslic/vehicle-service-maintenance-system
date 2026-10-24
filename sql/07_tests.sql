@@ -312,6 +312,8 @@ SET
             COUNT(*)
         FROM
             AuditLog
+        WHERE
+            Action <> 'Rejected'
     );
 
 SET
@@ -754,11 +756,13 @@ SET
             COUNT(*)
         FROM
             AuditLog
+        WHERE
+            Action <> 'Rejected'
     );
 
 CALL tst_Assert (
     'T-33',
-    'Rejected and rolled-back operations wrote no audit rows',
+    'Rejected and rolled-back operations wrote no data-change audit rows',
     @audit_after_rejections = @audit_before_rejections,
     CONCAT(
         'Audit rows before: ',
@@ -767,6 +771,28 @@ CALL tst_Assert (
         @audit_after_rejections
     )
 );
+
+-- T-48: a failed procedure call is audited. The work is
+-- rolled back, then exactly one 'Rejected' row records it
+SET @a = (SELECT MAX(AuditLogID) FROM AuditLog);
+
+CALL tst_ExpectError('T-48', 'Repair completion with too many rotors is rejected',
+    'CALL sp_CompleteRepair(6, 1, 3, ''[{"partId": 3, "qty": 5}]'')',
+    'Insufficient parts inventory');
+
+SET @rows = (SELECT COUNT(*) FROM AuditLog WHERE AuditLogID > @a);
+SET @c = (SELECT COUNT(*) FROM AuditLog
+          WHERE AuditLogID > @a
+            AND Action = 'Rejected'
+            AND UserID = 3
+            AND AffectedEntity = 'Repair'
+            AND AffectedRecordID = 6
+            AND ContextID IS NOT NULL
+            AND JSON_UNQUOTE(JSON_EXTRACT(NewValue, '$.Error')) = 'Insufficient parts inventory');
+
+CALL tst_Assert('T-48', 'Failed repair completion wrote exactly one Rejected audit row',
+    @rows = 1 AND @c = 1,
+    CONCAT('New audit rows: ', @rows, ' (expected 1), matching Rejected rows: ', @c, ' (expected 1)'));
 
 -- =====================================================================
 -- 3. OPERATIONS THAT MUST SUCCEED (these change data permanently)

@@ -23,13 +23,34 @@ BEGIN
     DECLARE v_Count INT DEFAULT 0;
     DECLARE v_AppointmentID INT;
     DECLARE v_EndDateTime DATETIME;
+    DECLARE v_ErrorMessage TEXT DEFAULT NULL;
 
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
+        -- Save the error message for the audit log before rolling back
+        GET DIAGNOSTICS CONDITION 1 v_ErrorMessage = MESSAGE_TEXT;
+
+        -- Undo the procedure's work first, so the failure record below survives
         ROLLBACK;
+
+        -- Failure audit: record the rejected request if the caller is a
+        -- known user (an unknown user cannot be referenced by AuditLog)
+        IF EXISTS (SELECT 1 FROM UserAccount WHERE UserID = p_CreatedByUserID) THEN
+            SET @app_user_id = p_CreatedByUserID;
+            SET @context_id = COALESCE(@context_id, UUID());
+            CALL sp_WriteAuditLog('Rejected', 'ServiceAppointment', NULL, NULL,
+                JSON_OBJECT('Procedure',           'sp_CreateServiceAppointment',
+                            'Error',               v_ErrorMessage,
+                            'CustomerID',          p_CustomerID,
+                            'VehicleID',           p_VehicleID,
+                            'TechnicianID',        p_TechnicianID,
+                            'AppointmentDateTime', p_AppointmentDateTime,
+                            'EstimatedDuration',   p_EstimatedDuration));
+        END IF;
+
         SET @app_user_id = NULL;
         SET @context_id = NULL;
-        RESIGNAL;
+        RESIGNAL;   -- the caller still receives the original error
     END;
 
     START TRANSACTION;
@@ -183,15 +204,29 @@ BEGIN
     DECLARE v_RepairStatus VARCHAR(20);
     DECLARE v_AppointmentStatus VARCHAR(20);
     DECLARE v_AssignedTechnicianID INT;
+    DECLARE v_ErrorMessage TEXT DEFAULT NULL;
 
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
+        GET DIAGNOSTICS CONDITION 1 v_ErrorMessage = MESSAGE_TEXT;
+
         ROLLBACK;
         DROP TEMPORARY TABLE IF EXISTS tmp_RepairParts;
+
+        IF EXISTS (SELECT 1 FROM UserAccount WHERE UserID = p_RecordedByUserID) THEN
+            SET @app_user_id = p_RecordedByUserID;
+            SET @context_id = COALESCE(@context_id, UUID());
+            CALL sp_WriteAuditLog('Rejected', 'Repair', p_RepairID, NULL,
+                JSON_OBJECT('Procedure',    'sp_CompleteRepair',
+                            'Error',        v_ErrorMessage,
+                            'TechnicianID', p_TechnicianID,
+                            'Parts',        p_Parts));
+        END IF;
+
         SET @app_user_id = NULL;
         SET @adj_reason = NULL;
         SET @context_id = NULL;
-        RESIGNAL;
+        RESIGNAL; 
     END;
 
     START TRANSACTION;

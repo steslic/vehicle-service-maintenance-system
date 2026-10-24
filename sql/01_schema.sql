@@ -340,7 +340,7 @@ CREATE TABLE AuditLog (
     `Timestamp` DATETIME NOT NULL,
     Action VARCHAR(50) NOT NULL,
     AffectedEntity VARCHAR(100) NOT NULL,
-    AffectedRecordID INT NOT NULL,
+    AffectedRecordID INT NULL, -- NULL for a rejected request that created no record 
     PreviousValue JSON NULL,
     NewValue JSON NULL,
     ContextID CHAR(36) NULL, -- groups the audit rows written by one procedure call 
