@@ -60,16 +60,16 @@ AFTER INSERT ON ServiceAppointment
 FOR EACH ROW
 BEGIN
     CALL sp_WriteAuditLog('Create', 'ServiceAppointment', NEW.AppointmentID, NULL,
-        JSON_OBJECT('VehicleID',           NEW.VehicleID,
-                    'TechnicianID',        NEW.TechnicianID,
-                    'AppointmentDateTime', NEW.AppointmentDateTime,
-                    'EstimatedDuration',   NEW.EstimatedDuration,
-                    'Status',              NEW.Status,
+        JSON_OBJECT('VehicleID',                 NEW.VehicleID,
+                    'TechnicianID',              NEW.TechnicianID,
+                    'CreatedByUserID',           NEW.CreatedByUserID,
+                    'AppointmentDateTime',       NEW.AppointmentDateTime,
+                    'Status',                    NEW.Status,
                     'ServiceRequestDescription', NEW.ServiceRequestDescription,
-                    'EstimatedDuration',   NEW.EstimatedDuration,
-                    'CreationTimestamp',     NEW.CreationTimestamp,
-                    'CancellationDate',        NEW.CancellationDate,
-                    'CancellationReason',      NEW.CancellationReason));
+                    'EstimatedDuration',         NEW.EstimatedDuration,
+                    'CreationTimestamp',         NEW.CreationTimestamp,
+                    'CancellationDate',          NEW.CancellationDate,
+                    'CancellationReason',        NEW.CancellationReason));
 END //
 
 DROP TRIGGER IF EXISTS trg_ServiceAppointment_Audit_au //
@@ -488,7 +488,8 @@ AFTER DELETE ON EstimateLineItem
 FOR EACH ROW
 BEGIN
     CALL sp_WriteAuditLog('Delete', 'EstimateLineItem', OLD.EstimateID,
-        JSON_OBJECT('LineNumber',  OLD.LineNumber,
+        JSON_OBJECT('EstimateID', OLD.EstimateID,
+                    'LineNumber',  OLD.LineNumber,
                     'Description', OLD.Description,
                     'Quantity',    OLD.Quantity,
                     'UnitPrice',   OLD.UnitPrice,
@@ -566,6 +567,18 @@ CREATE TRIGGER trg_ServiceAppointment_Status_Validate_bu
 BEFORE UPDATE ON ServiceAppointment
 FOR EACH ROW
 BEGIN
+    -- Record IDs never change 
+    IF NOT (OLD.AppointmentID <=> NEW.AppointmentID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Record IDs cannot be changed';
+    END IF;
+
+    -- The creating user is a historical fact and never changes
+    IF NOT (OLD.CreatedByUserID <=> NEW.CreatedByUserID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'The creating user cannot be changed';
+    END IF;
+
     IF OLD.Status IN ('Completed', 'Cancelled', 'No Show') THEN
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'Completed, cancelled, or no-show appointments cannot be modified';
@@ -803,6 +816,12 @@ BEGIN
         SET MESSAGE_TEXT = 'Record IDs cannot be changed';
     END IF;
 
+    -- The creating user is a historical fact and never changes
+    IF NOT (OLD.CreatedByUserID <=> NEW.CreatedByUserID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'The creating user cannot be changed';
+    END IF;
+
     IF OLD.Status = 'Finalized' THEN
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'Finalized estimates cannot be modified';
@@ -885,6 +904,12 @@ BEGIN
         SET MESSAGE_TEXT = 'Record IDs cannot be changed';
     END IF;
 
+    -- The creating user is a historical fact and never changes
+    IF NOT (OLD.CreatedByUserID <=> NEW.CreatedByUserID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'The creating user cannot be changed';
+    END IF;
+
     IF OLD.Status = 'Finalized' THEN
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'Finalized invoices cannot be modified';
@@ -959,7 +984,7 @@ BEGIN
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'A line item cannot be moved to another invoice';
     END IF;
-    
+
     IF (SELECT Status FROM Invoice WHERE InvoiceID = OLD.InvoiceID) = 'Finalized'
        OR (SELECT Status FROM Invoice WHERE InvoiceID = NEW.InvoiceID) = 'Finalized' THEN
         SIGNAL SQLSTATE '45000'
@@ -999,6 +1024,12 @@ CREATE TRIGGER trg_EstimateLineItem_Validate_bu
 BEFORE UPDATE ON EstimateLineItem
 FOR EACH ROW
 BEGIN
+    -- A line item belongs to the estimate it was added to
+    IF NOT (OLD.EstimateID <=> NEW.EstimateID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'A line item cannot be moved to another estimate';
+    END IF;
+    
     IF (SELECT Status FROM RepairEstimate WHERE EstimateID = OLD.EstimateID) = 'Finalized'
        OR (SELECT Status FROM RepairEstimate WHERE EstimateID = NEW.EstimateID) = 'Finalized' THEN
         SIGNAL SQLSTATE '45000'
