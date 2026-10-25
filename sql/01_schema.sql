@@ -240,6 +240,7 @@ CREATE TABLE EstimateLineItem (
     CHECK (Quantity > 0),
     CHECK (UnitPrice >= 0),
     CHECK (LineTotal >= 0),
+    CONSTRAINT chk_EstimateLineItem_LineTotal CHECK (LineTotal = Quantity * UnitPrice),
 
     FOREIGN KEY (EstimateID)
         REFERENCES RepairEstimate(EstimateID)
@@ -297,6 +298,7 @@ CREATE TABLE InvoiceLineItem (
     CHECK (Quantity > 0),
     CHECK (UnitPrice >= 0),
     CHECK (LineTotal >= 0),
+    CONSTRAINT chk_InvoiceLineItem_LineTotal CHECK (LineTotal = Quantity * UnitPrice),
 
     FOREIGN KEY (InvoiceID)
         REFERENCES Invoice(InvoiceID)
