@@ -64,7 +64,12 @@ BEGIN
                     'TechnicianID',        NEW.TechnicianID,
                     'AppointmentDateTime', NEW.AppointmentDateTime,
                     'EstimatedDuration',   NEW.EstimatedDuration,
-                    'Status',              NEW.Status));
+                    'Status',              NEW.Status,
+                    'ServiceRequestDescription', NEW.ServiceRequestDescription,
+                    'EstimatedDuration',   NEW.EstimatedDuration,
+                    'CreationTimestamp',     NEW.CreationTimestamp,
+                    'CancellationDate',        NEW.CancellationDate,
+                    'CancellationReason',      NEW.CancellationReason));
 END //
 
 DROP TRIGGER IF EXISTS trg_ServiceAppointment_Audit_au //
@@ -76,18 +81,26 @@ BEGIN
     DECLARE v_New JSON;
     DECLARE v_Action VARCHAR(50);
 
-    SET v_Old = JSON_OBJECT('VehicleID',           OLD.VehicleID,
-                            'TechnicianID',        OLD.TechnicianID,
-                            'AppointmentDateTime', OLD.AppointmentDateTime,
-                            'EstimatedDuration',   OLD.EstimatedDuration,
-                            'Status',              OLD.Status,
-                            'CancellationReason',  OLD.CancellationReason);
-    SET v_New = JSON_OBJECT('VehicleID',           NEW.VehicleID,
-                            'TechnicianID',        NEW.TechnicianID,
-                            'AppointmentDateTime', NEW.AppointmentDateTime,
-                            'EstimatedDuration',   NEW.EstimatedDuration,
-                            'Status',              NEW.Status,
-                            'CancellationReason',  NEW.CancellationReason);
+    SET v_Old = JSON_OBJECT('VehicleID',                 OLD.VehicleID,
+                            'TechnicianID',              OLD.TechnicianID,
+                            'CreatedByUserID',           OLD.CreatedByUserID,
+                            'AppointmentDateTime',       OLD.AppointmentDateTime,
+                            'EstimatedDuration',         OLD.EstimatedDuration,
+                            'Status',                    OLD.Status,
+                            'ServiceRequestDescription', OLD.ServiceRequestDescription,
+                            'CreationTimestamp',         OLD.CreationTimestamp,
+                            'CancellationDate',          OLD.CancellationDate,
+                            'CancellationReason',        OLD.CancellationReason);
+    SET v_New = JSON_OBJECT('VehicleID',                 NEW.VehicleID,
+                            'TechnicianID',              NEW.TechnicianID,
+                            'CreatedByUserID',           NEW.CreatedByUserID,
+                            'AppointmentDateTime',       NEW.AppointmentDateTime,
+                            'EstimatedDuration',         NEW.EstimatedDuration,
+                            'Status',                    NEW.Status,
+                            'ServiceRequestDescription', NEW.ServiceRequestDescription,
+                            'CreationTimestamp',         NEW.CreationTimestamp,
+                            'CancellationDate',          NEW.CancellationDate,
+                            'CancellationReason',        NEW.CancellationReason);
 
     IF v_Old <> v_New THEN
         SET v_Action = CASE
@@ -133,10 +146,13 @@ FOR EACH ROW
 BEGIN
     CALL sp_WriteAuditLog('Create', 'Repair', NEW.RepairID, NULL,
         JSON_OBJECT('AppointmentID',     NEW.AppointmentID,
+                    'CompletedByTechnicianID', NEW.CompletedByTechnicianID,
+                    'RepairDateTime',        NEW.RepairDateTime,
                     'RepairType',        NEW.RepairType,
                     'RepairDescription', NEW.RepairDescription,
                     'LaborHours',        NEW.LaborHours,
-                    'Status',            NEW.Status));
+                    'Status',            NEW.Status,
+                    'CompletionDateTime', NEW.CompletionDateTime));
 END //
 
 DROP TRIGGER IF EXISTS trg_Repair_Audit_au //
@@ -148,13 +164,17 @@ BEGIN
     DECLARE v_New JSON;
     DECLARE v_Action VARCHAR(50);
 
-    SET v_Old = JSON_OBJECT('RepairType',              OLD.RepairType,
+    SET v_Old = JSON_OBJECT('AppointmentID',           OLD.AppointmentID,
+                            'RepairDateTime',          OLD.RepairDateTime,
+                            'RepairType',              OLD.RepairType,
                             'RepairDescription',       OLD.RepairDescription,
                             'LaborHours',              OLD.LaborHours,
                             'Status',                  OLD.Status,
                             'CompletedByTechnicianID', OLD.CompletedByTechnicianID,
                             'CompletionDateTime',      OLD.CompletionDateTime);
-    SET v_New = JSON_OBJECT('RepairType',              NEW.RepairType,
+    SET v_New = JSON_OBJECT('AppointmentID',           NEW.AppointmentID,
+                            'RepairDateTime',          NEW.RepairDateTime,
+                            'RepairType',              NEW.RepairType,
                             'RepairDescription',       NEW.RepairDescription,
                             'LaborHours',              NEW.LaborHours,
                             'Status',                  NEW.Status,
@@ -201,9 +221,12 @@ FOR EACH ROW
 BEGIN
     CALL sp_WriteAuditLog('Create', 'RepairEstimate', NEW.EstimateID, NULL,
         JSON_OBJECT('AppointmentID', NEW.AppointmentID,
+                    'CreatedByUserID', NEW.CreatedByUserID,
+                    'ApprovedByUserID', NEW.ApprovedByUserID,
                     'EstimateDate',  NEW.EstimateDate,
                     'TotalAmount',   NEW.TotalAmount,
-                    'Status',        NEW.Status));
+                    'Status',        NEW.Status,
+                    'ApprovalDateTime', NEW.ApprovalDateTime));
 END //
 
 DROP TRIGGER IF EXISTS trg_RepairEstimate_Audit_au //
@@ -215,12 +238,16 @@ BEGIN
     DECLARE v_New JSON;
     DECLARE v_Action VARCHAR(50);
 
-    SET v_Old = JSON_OBJECT('EstimateDate',     OLD.EstimateDate,
+    SET v_Old = JSON_OBJECT('AppointmentID',    OLD.AppointmentID,
+                            'CreatedByUserID',  OLD.CreatedByUserID,
+                            'EstimateDate',     OLD.EstimateDate,
                             'TotalAmount',      OLD.TotalAmount,
                             'Status',           OLD.Status,
                             'ApprovedByUserID', OLD.ApprovedByUserID,
                             'ApprovalDateTime', OLD.ApprovalDateTime);
-    SET v_New = JSON_OBJECT('EstimateDate',     NEW.EstimateDate,
+    SET v_New = JSON_OBJECT('AppointmentID',    NEW.AppointmentID,
+                            'CreatedByUserID',  NEW.CreatedByUserID,
+                            'EstimateDate',     NEW.EstimateDate,
                             'TotalAmount',      NEW.TotalAmount,
                             'Status',           NEW.Status,
                             'ApprovedByUserID', NEW.ApprovedByUserID,
@@ -266,9 +293,12 @@ FOR EACH ROW
 BEGIN
     CALL sp_WriteAuditLog('Create', 'Invoice', NEW.InvoiceID, NULL,
         JSON_OBJECT('AppointmentID', NEW.AppointmentID,
+                    'CreatedByUserID', NEW.CreatedByUserID,
+                    'FinalizedByUserID', NEW.FinalizedByUserID,
                     'InvoiceDate',   NEW.InvoiceDate,
+                    'Status',        NEW.Status,
                     'TotalAmount',   NEW.TotalAmount,
-                    'Status',        NEW.Status));
+                    'FinalizationDateTime', NEW.FinalizationDateTime));
 END //
 
 DROP TRIGGER IF EXISTS trg_Invoice_Audit_au //
@@ -280,12 +310,16 @@ BEGIN
     DECLARE v_New JSON;
     DECLARE v_Action VARCHAR(50);
 
-    SET v_Old = JSON_OBJECT('InvoiceDate',          OLD.InvoiceDate,
+    SET v_Old = JSON_OBJECT('AppointmentID',        OLD.AppointmentID,
+                            'CreatedByUserID',      OLD.CreatedByUserID,
+                            'InvoiceDate',          OLD.InvoiceDate,
                             'TotalAmount',          OLD.TotalAmount,
                             'Status',               OLD.Status,
                             'FinalizedByUserID',    OLD.FinalizedByUserID,
                             'FinalizationDateTime', OLD.FinalizationDateTime);
-    SET v_New = JSON_OBJECT('InvoiceDate',          NEW.InvoiceDate,
+    SET v_New = JSON_OBJECT('AppointmentID',        NEW.AppointmentID,
+                            'CreatedByUserID',      NEW.CreatedByUserID,
+                            'InvoiceDate',          NEW.InvoiceDate,
                             'TotalAmount',          NEW.TotalAmount,
                             'Status',               NEW.Status,
                             'FinalizedByUserID',    NEW.FinalizedByUserID,
@@ -354,9 +388,11 @@ BEGIN
     CALL sp_WriteAuditLog('Create', 'PartsUsage', NEW.PartsUsageID, NULL,
         JSON_OBJECT('RepairID',                    NEW.RepairID,
                     'PartID',                      NEW.PartID,
+                    'RecordedByUserID',            NEW.RecordedByUserID,
                     'QuantityUsed',                NEW.QuantityUsed,
                     'UnitSellingPriceAtTimeOfUse', NEW.UnitSellingPriceAtTimeOfUse,
-                    'UnitCostAtTimeOfUse',         NEW.UnitCostAtTimeOfUse));
+                    'UnitCostAtTimeOfUse',         NEW.UnitCostAtTimeOfUse,
+                    'RecordedDateTime',            NEW.RecordedDateTime));
 END //
 
 DROP TRIGGER IF EXISTS trg_PartsUsage_Audit_au //
@@ -367,12 +403,20 @@ BEGIN
     DECLARE v_Old JSON;
     DECLARE v_New JSON;
 
-    SET v_Old = JSON_OBJECT('RepairID',     OLD.RepairID,
-                            'PartID',       OLD.PartID,
-                            'QuantityUsed', OLD.QuantityUsed);
-    SET v_New = JSON_OBJECT('RepairID',     NEW.RepairID,
-                            'PartID',       NEW.PartID,
-                            'QuantityUsed', NEW.QuantityUsed);
+    SET v_Old = JSON_OBJECT('RepairID',                    OLD.RepairID,
+                            'PartID',                      OLD.PartID,
+                            'RecordedByUserID',            OLD.RecordedByUserID,
+                            'QuantityUsed',                OLD.QuantityUsed,
+                            'UnitSellingPriceAtTimeOfUse', OLD.UnitSellingPriceAtTimeOfUse,
+                            'UnitCostAtTimeOfUse',         OLD.UnitCostAtTimeOfUse,
+                            'RecordedDateTime',            OLD.RecordedDateTime);
+    SET v_New = JSON_OBJECT('RepairID',                    NEW.RepairID,
+                            'PartID',                      NEW.PartID,
+                            'RecordedByUserID',            NEW.RecordedByUserID,
+                            'QuantityUsed',                NEW.QuantityUsed,
+                            'UnitSellingPriceAtTimeOfUse', NEW.UnitSellingPriceAtTimeOfUse,
+                            'UnitCostAtTimeOfUse',         NEW.UnitCostAtTimeOfUse,
+                            'RecordedDateTime',            NEW.RecordedDateTime);
 
     IF v_Old <> v_New THEN
         CALL sp_WriteAuditLog('Update', 'PartsUsage', NEW.PartsUsageID, v_Old, v_New);
@@ -395,6 +439,117 @@ BEGIN
         NULL);
 END //
 
+-- ---------------------------------------------------------------------
+-- trg_EstimateLineItem_Audit
+-- ---------------------------------------------------------------------
+DROP TRIGGER IF EXISTS trg_EstimateLineItem_Audit_ai //
+CREATE TRIGGER trg_EstimateLineItem_Audit_ai
+AFTER INSERT ON EstimateLineItem
+FOR EACH ROW
+BEGIN
+    CALL sp_WriteAuditLog('Create', 'EstimateLineItem', NEW.EstimateID, NULL,
+        JSON_OBJECT('EstimateID',  NEW.EstimateID,
+                    'LineNumber',  NEW.LineNumber,
+                    'Description', NEW.Description,
+                    'Quantity',    NEW.Quantity,
+                    'UnitPrice',   NEW.UnitPrice,
+                    'LineTotal',   NEW.LineTotal));
+END //
+
+DROP TRIGGER IF EXISTS trg_EstimateLineItem_Audit_au //
+CREATE TRIGGER trg_EstimateLineItem_Audit_au
+AFTER UPDATE ON EstimateLineItem
+FOR EACH ROW
+BEGIN
+    DECLARE v_Old JSON;
+    DECLARE v_New JSON;
+
+    SET v_Old = JSON_OBJECT('EstimateID',  OLD.EstimateID,
+                            'LineNumber',  OLD.LineNumber,
+                            'Description', OLD.Description,
+                            'Quantity',    OLD.Quantity,
+                            'UnitPrice',   OLD.UnitPrice,
+                            'LineTotal',   OLD.LineTotal);
+    SET v_New = JSON_OBJECT('EstimateID',  NEW.EstimateID,
+                            'LineNumber',  NEW.LineNumber,
+                            'Description', NEW.Description,
+                            'Quantity',    NEW.Quantity,
+                            'UnitPrice',   NEW.UnitPrice,
+                            'LineTotal',   NEW.LineTotal);
+
+    IF v_Old <> v_New THEN
+        CALL sp_WriteAuditLog('Update', 'EstimateLineItem', NEW.EstimateID, v_Old, v_New);
+    END IF;
+END //
+
+DROP TRIGGER IF EXISTS trg_EstimateLineItem_Audit_ad //
+CREATE TRIGGER trg_EstimateLineItem_Audit_ad
+AFTER DELETE ON EstimateLineItem
+FOR EACH ROW
+BEGIN
+    CALL sp_WriteAuditLog('Delete', 'EstimateLineItem', OLD.EstimateID,
+        JSON_OBJECT('LineNumber',  OLD.LineNumber,
+                    'Description', OLD.Description,
+                    'Quantity',    OLD.Quantity,
+                    'UnitPrice',   OLD.UnitPrice,
+                    'LineTotal',   OLD.LineTotal),
+        NULL);
+END //
+
+
+-- ---------------------------------------------------------------------
+-- trg_InvoiceLineItem_Audit
+-- ---------------------------------------------------------------------
+DROP TRIGGER IF EXISTS trg_InvoiceLineItem_Audit_ai //
+CREATE TRIGGER trg_InvoiceLineItem_Audit_ai
+AFTER INSERT ON InvoiceLineItem
+FOR EACH ROW
+BEGIN
+    CALL sp_WriteAuditLog('Create', 'InvoiceLineItem', NEW.InvoiceLineItemID, NULL,
+        JSON_OBJECT('InvoiceID',   NEW.InvoiceID,
+                    'Description', NEW.Description,
+                    'Quantity',    NEW.Quantity,
+                    'UnitPrice',   NEW.UnitPrice,
+                    'LineTotal',   NEW.LineTotal));
+END //
+
+DROP TRIGGER IF EXISTS trg_InvoiceLineItem_Audit_au //
+CREATE TRIGGER trg_InvoiceLineItem_Audit_au
+AFTER UPDATE ON InvoiceLineItem
+FOR EACH ROW
+BEGIN
+    DECLARE v_Old JSON;
+    DECLARE v_New JSON;
+
+    SET v_Old = JSON_OBJECT('InvoiceID',   OLD.InvoiceID,
+                            'Description', OLD.Description,
+                            'Quantity',    OLD.Quantity,
+                            'UnitPrice',   OLD.UnitPrice,
+                            'LineTotal',   OLD.LineTotal);
+    SET v_New = JSON_OBJECT('InvoiceID',   NEW.InvoiceID,
+                            'Description', NEW.Description,
+                            'Quantity',    NEW.Quantity,
+                            'UnitPrice',   NEW.UnitPrice,
+                            'LineTotal',   NEW.LineTotal);
+
+    IF v_Old <> v_New THEN
+        CALL sp_WriteAuditLog('Update', 'InvoiceLineItem', NEW.InvoiceLineItemID, v_Old, v_New);
+    END IF;
+END //
+
+DROP TRIGGER IF EXISTS trg_InvoiceLineItem_Audit_ad //
+CREATE TRIGGER trg_InvoiceLineItem_Audit_ad
+AFTER DELETE ON InvoiceLineItem
+FOR EACH ROW
+BEGIN
+    CALL sp_WriteAuditLog('Delete', 'InvoiceLineItem', OLD.InvoiceLineItemID,
+        JSON_OBJECT('InvoiceID',   OLD.InvoiceID,
+                    'Description', OLD.Description,
+                    'Quantity',    OLD.Quantity,
+                    'UnitPrice',   OLD.UnitPrice,
+                    'LineTotal',   OLD.LineTotal),
+        NULL);
+END //
 
 -- =====================================================================
 -- 3. VALIDATION TRIGGERS (FR-14, FR-18, FR-19, SEC-01, SEC-02, BR-05)
@@ -414,6 +569,12 @@ BEGIN
     IF OLD.Status IN ('Completed', 'Cancelled', 'No Show') THEN
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'Completed, cancelled, or no-show appointments cannot be modified';
+    END IF;
+
+    -- The vehicle is fixed when the appointment is booked, so it cannot be changed later (FR-14)
+    IF NOT (OLD.VehicleID <=> NEW.VehicleID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'An appointment cannot be moved to another vehicle';
     END IF;
 
     IF NOT (OLD.Status <=> NEW.Status) THEN
@@ -563,9 +724,21 @@ BEGIN
     DECLARE v_UserTechID INT         DEFAULT NULL;
     DECLARE v_ApptTechID INT         DEFAULT NULL;
 
+    -- Record IDs never change (a changed ID would also escape the audit trail)
+    IF NOT (OLD.RepairID <=> NEW.RepairID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Record IDs cannot be changed';
+    END IF;
+
     IF OLD.Status IN ('Completed', 'Cancelled') THEN
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'Completed or cancelled repairs cannot be modified';
+    END IF;
+
+    -- A repair belongs to the appointment it was opened on
+    IF NOT (OLD.AppointmentID <=> NEW.AppointmentID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'A repair cannot be moved to another appointment';
     END IF;
 
     IF NOT (OLD.Status <=> NEW.Status) THEN
@@ -624,9 +797,21 @@ FOR EACH ROW
 BEGIN
     DECLARE v_Role VARCHAR(30) DEFAULT NULL;
 
+    -- Record IDs never change (a changed ID would also escape the audit trail)
+    IF NOT (OLD.EstimateID <=> NEW.EstimateID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Record IDs cannot be changed';
+    END IF;
+
     IF OLD.Status = 'Finalized' THEN
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'Finalized estimates cannot be modified';
+    END IF;
+
+    -- An estimate belongs to the appointment it was created for
+    IF NOT (OLD.AppointmentID <=> NEW.AppointmentID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'An estimate cannot be moved to another appointment';
     END IF;
 
     IF NOT (OLD.Status <=> NEW.Status) THEN
@@ -641,12 +826,15 @@ BEGIN
 
         -- The manager's decision is recorded in ApprovedByUserID and ApprovalDateTime
         IF NEW.Status IN ('Approved', 'Rejected') THEN
+            SET NEW.ApprovedByUserID = COALESCE(NEW.ApprovedByUserID, @app_user_id);
+
             SELECT RoleType
             INTO v_Role
             FROM UserAccount
-            WHERE UserID = NEW.ApprovedByUserID;
+            WHERE UserID = @app_user_id;
 
-            IF v_Role IS NULL OR v_Role <> 'Manager' THEN
+            IF v_Role IS NULL OR v_Role <> 'Manager'
+               OR NOT (NEW.ApprovedByUserID <=> @app_user_id) THEN
                 SIGNAL SQLSTATE '45000'
                 SET MESSAGE_TEXT = 'Estimates must be approved or rejected by a Manager';
             END IF;
@@ -691,20 +879,35 @@ FOR EACH ROW
 BEGIN
     DECLARE v_Role VARCHAR(30) DEFAULT NULL;
 
+    -- Record IDs never change (a changed ID would also escape the audit trail)
+    IF NOT (OLD.InvoiceID <=> NEW.InvoiceID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Record IDs cannot be changed';
+    END IF;
+
     IF OLD.Status = 'Finalized' THEN
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'Finalized invoices cannot be modified';
     END IF;
 
+    -- An invoice belongs to the appointment it was created for
+    IF NOT (OLD.AppointmentID <=> NEW.AppointmentID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'An invoice cannot be moved to another appointment';
+    END IF;
+
     -- The CHECK constraint allows only Draft and Finalized, so the only
     -- possible transition from here is Draft -> Finalized
     IF NEW.Status = 'Finalized' THEN
+        SET NEW.FinalizedByUserID = COALESCE(NEW.FinalizedByUserID, @app_user_id);
+
         SELECT RoleType
         INTO v_Role
         FROM UserAccount
-        WHERE UserID = NEW.FinalizedByUserID;
+        WHERE UserID = @app_user_id;
 
-        IF v_Role IS NULL OR v_Role NOT IN ('Service Advisor', 'Manager') THEN
+        IF v_Role IS NULL OR v_Role NOT IN ('Service Advisor', 'Manager')
+           OR NOT (NEW.FinalizedByUserID <=> @app_user_id) THEN
             SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'Invoices must be finalized by a Service Advisor or Manager';
         END IF;
@@ -745,6 +948,18 @@ CREATE TRIGGER trg_InvoiceLineItem_Validate_bu
 BEFORE UPDATE ON InvoiceLineItem
 FOR EACH ROW
 BEGIN
+    -- Record IDs never change (a changed ID would also escape the audit trail)
+    IF NOT (OLD.InvoiceLineItemID <=> NEW.InvoiceLineItemID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Record IDs cannot be changed';
+    END IF;
+
+    -- A line item belongs to the invoice it was added to
+    IF NOT (OLD.InvoiceID <=> NEW.InvoiceID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'A line item cannot be moved to another invoice';
+    END IF;
+    
     IF (SELECT Status FROM Invoice WHERE InvoiceID = OLD.InvoiceID) = 'Finalized'
        OR (SELECT Status FROM Invoice WHERE InvoiceID = NEW.InvoiceID) = 'Finalized' THEN
         SIGNAL SQLSTATE '45000'
