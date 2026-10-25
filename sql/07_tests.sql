@@ -318,6 +318,42 @@ CALL tst_Assert('T-49', 'Technician role reads only through the filtered views',
     @base = 0 AND @views = 2,
     CONCAT('Base-table grants: ', @base, ' (expected 0), view grants: ', @views, ' (expected 2)'));
 
+-- T-50 / FR-14: an appointment cannot be closed while a repair is open
+-- (appointment 6 is In Progress and its repair 6 is still In Progress)
+SET @app_user_id = 2;   -- Amy
+CALL tst_ExpectError('T-50', 'Appointment with an open repair cannot be completed',
+    'UPDATE ServiceAppointment SET Status = ''Completed'' WHERE AppointmentID = 6',
+    'Appointment has open repairs');
+
+-- T-52 / FR-16, BR-09: rescheduling is overlap-checked
+-- (Ben has appointment 6 on 2026-10-16 09:00-11:00)
+CALL tst_ExpectError('T-52', 'Rescheduling into a technician''s busy time is rejected',
+    'UPDATE ServiceAppointment SET AppointmentDateTime = ''2026-10-16 10:00:00'' WHERE AppointmentID = 9',
+    'Technician already has a conflicting appointment');
+
+-- T-53 / FR-17: line total must equal quantity x unit price (invoice 3 is a Draft)
+CALL tst_ExpectError('T-53', 'Line item with a wrong line total is rejected',
+    'INSERT INTO InvoiceLineItem (InvoiceID, Description, Quantity, UnitPrice, LineTotal) VALUES (3, ''Wiper blades'', 2, 10.00, 25.00)',
+    'chk_InvoiceLineItem_LineTotal');
+
+-- T-55 / SEC-01: a Service Advisor cannot approve in a Manager's name
+CALL tst_ExpectError('T-55', 'Advisor cannot approve an estimate by naming a Manager',
+    'UPDATE RepairEstimate SET Status = ''Approved'', ApprovedByUserID = 1 WHERE EstimateID = 3',
+    'Estimates must be approved or rejected by a Manager');
+
+-- T-56 / FR-15: an appointment cannot be moved to another vehicle
+CALL tst_ExpectError('T-56', 'Appointment cannot be moved to another vehicle',
+    'UPDATE ServiceAppointment SET VehicleID = 5 WHERE AppointmentID = 9',
+    'An appointment cannot be moved to another vehicle');
+
+-- T-57 / FR-08: record IDs and the creating user cannot be changed
+CALL tst_ExpectError('T-57', 'Record ID cannot be changed',
+    'UPDATE ServiceAppointment SET AppointmentID = 500 WHERE AppointmentID = 9',
+    'Record IDs cannot be changed');
+CALL tst_ExpectError('T-57', 'Creating user cannot be changed',
+    'UPDATE Invoice SET CreatedByUserID = 1 WHERE InvoiceID = 3',
+    'The creating user cannot be changed');
+
 -- =====================================================================
 -- 2. OPERATIONS THAT MUST BE REJECTED (data must remain unchanged)
 -- =====================================================================
@@ -1274,6 +1310,21 @@ SET @c = (SELECT COUNT(*) FROM AuditLog
 CALL tst_Assert('T-47', 'Direct update outside a procedure has no context ID',
     @c = 1, CONCAT('Reschedule rows with no context ID: ', @c, ' (expected 1)'));
 
+-- T-54 / FR-08: an edit to a draft invoice line is audited
+SET @app_user_id = 2;   -- Amy
+SET @line54 = (SELECT MIN(InvoiceLineItemID) FROM InvoiceLineItem WHERE InvoiceID = 3);
+SET @a = (SELECT MAX(AuditLogID) FROM AuditLog);
+
+CALL tst_ExpectSuccess('T-54', 'Change the price of a draft invoice line',
+    'UPDATE InvoiceLineItem SET UnitPrice = 85.00, LineTotal = 85.00 * Quantity WHERE InvoiceLineItemID = @line54');
+
+SET @c = (SELECT COUNT(*) FROM AuditLog
+          WHERE AuditLogID > @a AND Action = 'Update'
+            AND AffectedEntity = 'InvoiceLineItem' AND AffectedRecordID = @line54);
+
+CALL tst_Assert('T-54', 'Line item edit was audited',
+    @c = 1, CONCAT('Matching audit rows: ', @c, ' (expected 1)'));
+
 -- T-46 / FR-12, BR-10: using exactly the quantity on hand is allowed and
 -- leaves 0 in stock. Builds its own repair (vehicle 1, Carla) because
 -- repairs 6 and 7 are already completed above. Uses spark plugs.
@@ -1313,6 +1364,26 @@ CALL tst_Assert('T-46', 'Quantity equal to stock accepted; inventory is now 0',
     @p5_after = 0 AND @used = @p5_before AND @status = 'Completed',
     CONCAT('Spark plug: ', @p5_before, ' -> ', @p5_after,
            ', quantity used: ', @used, ', repair status: ', @status));
+
+-- T-51 / FR-03: a repair cannot be completed unless its appointment is In Progress
+SET @t51 = @t03 + INTERVAL 7 DAY;
+CALL tst_ExpectSuccess('T-51', 'Book appointment for the status test',
+    'CALL sp_CreateServiceAppointment(1, 1, 2, 2, @t51, ''Appointment status test'', 60)');
+SET @appt51 = (SELECT AppointmentID FROM ServiceAppointment WHERE VehicleID = 1 AND AppointmentDateTime = @t51);
+
+SET @app_user_id = 2;   -- Amy checks in (does not start) and opens a repair
+CALL tst_ExpectSuccess('T-51', 'Check in appointment',
+    'UPDATE ServiceAppointment SET Status = ''Checked In'' WHERE AppointmentID = @appt51');
+CALL tst_ExpectSuccess('T-51', 'Open repair',
+    'INSERT INTO Repair (AppointmentID, RepairDateTime, RepairType, RepairDescription, LaborHours, Status) VALUES (@appt51, @t51, ''Diagnostic'', ''Status test'', 0.50, ''Open'')');
+SET @repair51 = (SELECT RepairID FROM Repair WHERE AppointmentID = @appt51);
+
+SET @app_user_id = 4;   -- Carla starts it, then tries to complete it
+CALL tst_ExpectSuccess('T-51', 'Start repair',
+    'UPDATE Repair SET Status = ''In Progress'' WHERE RepairID = @repair51');
+CALL tst_ExpectError('T-51', 'Repair on a Checked In appointment cannot be completed',
+    'CALL sp_CompleteRepair(@repair51, 2, 4, NULL)',
+    'Appointment must be In Progress to complete a repair');
 
 SET
     @app_user_id = NULL;
