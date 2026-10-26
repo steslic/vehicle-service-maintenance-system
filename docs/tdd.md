@@ -22,7 +22,7 @@ This project implements a relational database for an independent auto repair sho
 | SQL client                 | MySQL command-line client; MySQL Workbench          | Build the schema, run scripts, and test SQL      |
 | Editor                     | Visual Studio Code                                  | Write SQL scripts and Markdown documentation     |
 | Modeling tool              | draw.io                                             | Create the ERD                                   |
-| Source control             | Git and GitHub; release tag `v1.0`                  | Version scripts and documentation; tagged builds |
+| Source control             | Git and GitHub; release tag `v1.1`                  | Version scripts and documentation; tagged builds |
 | Documentation              | Markdown                                            | FRD, TDD, README, and performance records        |
 | Operating environment      | macOS                                               | Development and testing environment              |
 
