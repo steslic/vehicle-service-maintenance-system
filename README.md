@@ -45,7 +45,7 @@ MySQL Workbench is optional and is only used for viewing results.
 Clone the tagged release so you build exactly the submitted version:
 
 ```bash
-git clone --branch v1.0 https://github.com/steslic/vehicle-service-maintenance-system.git
+git clone --branch v1.1 https://github.com/steslic/vehicle-service-maintenance-system.git
 cd vehicle-service-maintenance-system/sql
 ```
 
