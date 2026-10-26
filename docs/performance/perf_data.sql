@@ -1,6 +1,9 @@
 -- Vehicle Service and Maintenance Management System
 -- docs/performance/perf_data.sql
 -- Generates a large data set for performance measurement.
+-- from the repo root
+-- /usr/local/mysql/bin/mysql -u root -p < docs/performance/perf_data.sql
+-- /usr/local/mysql/bin/mysql -t -u root -p < docs/performance/OPT-01_common_repairs_covering_index.sql
 
 USE vehicle_service_maintenance;
 
