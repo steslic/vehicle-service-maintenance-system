@@ -25,7 +25,7 @@
 -- =====================================================================
 
 -- 1.1 In shell (documented README process):
---   git clone --branch v1.1https://github.com/steslic/vehicle-service-maintenance-system.git
+--   git clone --branch v1.2 https://github.com/steslic/vehicle-service-maintenance-system.git
 --   cd vehicle-service-maintenance-system/sql
 --   /usr/local/mysql/bin/mysql --commands=ON -u root -p < build.sql
 
@@ -325,6 +325,12 @@ CALL sp_CompleteRepair(9, 1, 3, NULL);
 -- 4.4 Approval is Manager-only (estimate 3 is Pending Approval)
 -- [sa_amy] EXPECTED: ERROR "Estimates must be approved or rejected by a Manager"
 UPDATE RepairEstimate SET Status = 'Approved', ApprovedByUserID = 2 WHERE EstimateID = 3;
+
+-- [sa_amy] EXPECTED: ERROR "Acting user must be the logged-in user"
+--          Amy cannot pretend to be Mike: @app_user_id is checked against her login
+SET @app_user_id = 1;
+UPDATE RepairEstimate SET Status = 'Approved', ApprovedByUserID = 1 WHERE EstimateID = 3;
+SET @app_user_id = 2;
 
 -- [mgr_mike] Allowed to approve estimate 3 
 SET @app_user_id = 1;
