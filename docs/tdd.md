@@ -22,7 +22,7 @@ This project implements a relational database for an independent auto repair sho
 | SQL client                 | MySQL command-line client; MySQL Workbench          | Build the schema, run scripts, and test SQL      |
 | Editor                     | Visual Studio Code                                  | Write SQL scripts and Markdown documentation     |
 | Modeling tool              | draw.io                                             | Create the ERD                                   |
-| Source control             | Git and GitHub; release tag `v1.1`                  | Version scripts and documentation; tagged builds |
+| Source control             | Git and GitHub; release tag `v1.2`                  | Version scripts and documentation; tagged builds |
 | Documentation              | Markdown                                            | FRD, TDD, README, and performance records        |
 | Operating environment      | macOS                                               | Development and testing environment              |
 
@@ -601,7 +601,7 @@ ORDER BY AuditLogID;
 - **Technicians can read all vehicles, parts, and parts usage.** Row-level filtering covers appointments and repairs (`vw_MyAppointments`, `vw_MyRepairs`); the other tables contain no customer information.
 - **Master-data changes are not audited.** Changes to Customer, Vehicle, Technician (including deactivation), and Part details other than quantity (such as price) are not recorded in AuditLog. Auditing covers operational and financial records; the same trigger pattern could be applied to these tables.
 - **Approved estimates can still be edited until they are finalized.** After approval, an advisor can change the estimate's total, its line items, and its approval fields (`ApprovedByUserID`, `ApprovalDateTime`) without a new approval; records are locked only once Finalized. Every change is audited under the real user. Fix: lock an estimate once it is decided (Approved, Rejected, Expired), allowing only the move to Finalized, or require re-approval after an edit.
-- **Finalized invoices cannot be voided or corrected.** Invoices have only Draft and Finalized statuses, and each appointment can have one invoice, so a finalized error cannot be reversed. Fix: add a Void status or a credit-memo record.
+- **Finalized invoices cannot be voided or corrected.** Invoices have only Draft and Finalized statuses, and each appointment can have one invoice, so a finalized error cannot be reversed.
 
 ## 13. Test plan and acceptance criteria
 
