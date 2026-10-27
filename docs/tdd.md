@@ -595,11 +595,13 @@ ORDER BY AuditLogID;
 
 ### Known limitations
 
-- **The acting user (`@app_user_id`) is trusted as supplied.** A production application would set it after authentication. Row-level reads do not depend on it: the technician views filter on the authenticated MySQL login (`USER()`).
+- **The acting user (`@app_user_id`) is verified only for business-user logins.** For a user logged in with their own MySQL account (e.g. `sa_amy`), every audited write checks that `@app_user_id` belongs to that login (`USER()`); a mismatch is rejected ("Acting user must be the logged-in user") and the whole change rolls back. Connections with no UserAccount (root, or an application service account) are trusted to set it, as a production application would after authenticating the user. Row-level reads do not depend on it: the technician views filter on `USER()`.
 - **Managers can complete a repair directly** by setting the status and completion fields in one UPDATE, without recording parts. This is treated as an audited supervisor override; technicians cannot do this (`chk_Repair_Completion`, T-38).
 - **Only stored-procedure failures are audited.** Failed procedure calls write a 'Rejected' audit row (T-48), but rejections of direct statements (trigger, constraint, or privilege errors outside a procedure) are not recorded, because a failed statement rolls back anything its trigger writes and privilege errors occur before any trigger runs. A failed call with a nonexistent user ID is also not recorded, because AuditLog.UserID must reference a real account.
 - **Technicians can read all vehicles, parts, and parts usage.** Row-level filtering covers appointments and repairs (`vw_MyAppointments`, `vw_MyRepairs`); the other tables contain no customer information.
 - **Master-data changes are not audited.** Changes to Customer, Vehicle, Technician (including deactivation), and Part details other than quantity (such as price) are not recorded in AuditLog. Auditing covers operational and financial records; the same trigger pattern could be applied to these tables.
+- **Approved estimates can still be edited until they are finalized.** After approval, an advisor can change the estimate's total, its line items, and its approval fields (`ApprovedByUserID`, `ApprovalDateTime`) without a new approval; records are locked only once Finalized. Every change is audited under the real user. Fix: lock an estimate once it is decided (Approved, Rejected, Expired), allowing only the move to Finalized, or require re-approval after an edit.
+- **Finalized invoices cannot be voided or corrected.** Invoices have only Draft and Finalized statuses, and each appointment can have one invoice, so a finalized error cannot be reversed. Fix: add a Void status or a credit-memo record.
 
 ## 13. Test plan and acceptance criteria
 

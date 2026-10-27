@@ -33,6 +33,19 @@ BEGIN
         SET MESSAGE_TEXT = 'Acting user not set: SET @app_user_id before writing audited data';
     END IF;
 
+    -- A business user logged in with their own MySQL account can only act
+    -- as themselves. USER() is the authenticated login and cannot be set by
+    -- the caller. root (the admin/application connection) has no UserAccount
+    -- row, so it may act as any user.
+    IF EXISTS (SELECT 1 FROM UserAccount
+               WHERE Username = SUBSTRING_INDEX(USER(), '@', 1))
+       AND NOT EXISTS (SELECT 1 FROM UserAccount
+                       WHERE UserID = @app_user_id
+                         AND Username = SUBSTRING_INDEX(USER(), '@', 1)) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Acting user must be the logged-in user';
+    END IF;
+
     INSERT INTO AuditLog (
         UserID, `Timestamp`, Action, AffectedEntity,
         AffectedRecordID, PreviousValue, NewValue, ContextID
@@ -860,6 +873,15 @@ BEGIN
 
             SET NEW.ApprovalDateTime = COALESCE(NEW.ApprovalDateTime, NOW());
         END IF;
+
+        -- finalized estimate's total must equal the sum of its line items
+        IF NEW.Status = 'Finalized'
+           AND NEW.TotalAmount <> (SELECT COALESCE(SUM(LineTotal), 0)
+                                   FROM EstimateLineItem
+                                   WHERE EstimateID = NEW.EstimateID) THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Estimate total must equal the sum of its line items';
+        END IF;
     END IF;
 END //
 
@@ -938,6 +960,14 @@ BEGIN
         END IF;
 
         SET NEW.FinalizationDateTime = COALESCE(NEW.FinalizationDateTime, NOW());
+
+        -- A finalized invoice's total must equal the sum of its line items
+        IF NEW.TotalAmount <> (SELECT COALESCE(SUM(LineTotal), 0)
+                               FROM InvoiceLineItem
+                               WHERE InvoiceID = NEW.InvoiceID) THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Invoice total must equal the sum of its line items';
+        END IF;
     END IF;
 END //
 
@@ -1029,7 +1059,7 @@ BEGIN
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'A line item cannot be moved to another estimate';
     END IF;
-    
+
     IF (SELECT Status FROM RepairEstimate WHERE EstimateID = OLD.EstimateID) = 'Finalized'
        OR (SELECT Status FROM RepairEstimate WHERE EstimateID = NEW.EstimateID) = 'Finalized' THEN
         SIGNAL SQLSTATE '45000'

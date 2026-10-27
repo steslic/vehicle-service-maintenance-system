@@ -33,10 +33,16 @@ BEGIN
         -- Undo the procedure's work first, so the failure record below survives
         ROLLBACK;
 
-        -- Failure audit: record the rejected request if the caller is a
-        -- known user (an unknown user cannot be referenced by AuditLog)
-        IF EXISTS (SELECT 1 FROM UserAccount WHERE UserID = p_CreatedByUserID) THEN
-            SET @app_user_id = p_CreatedByUserID;
+        -- Failure audit: record the attempt under the logged-in user if they
+        -- have an account (so an impersonation attempt is logged as the real
+        -- caller); otherwise (root) under the user passed in
+        SET @app_user_id = COALESCE(
+            (SELECT UserID FROM UserAccount
+             WHERE Username = SUBSTRING_INDEX(USER(), '@', 1)),
+            p_CreatedByUserID);
+
+        -- An unknown user cannot be referenced by AuditLog
+        IF EXISTS (SELECT 1 FROM UserAccount WHERE UserID = @app_user_id) THEN
             SET @context_id = COALESCE(@context_id, UUID());
             CALL sp_WriteAuditLog('Rejected', 'ServiceAppointment', NULL, NULL,
                 JSON_OBJECT('Procedure',           'sp_CreateServiceAppointment',
@@ -213,8 +219,15 @@ BEGIN
         ROLLBACK;
         DROP TEMPORARY TABLE IF EXISTS tmp_RepairParts;
 
-        IF EXISTS (SELECT 1 FROM UserAccount WHERE UserID = p_RecordedByUserID) THEN
-            SET @app_user_id = p_RecordedByUserID;
+        -- Failure audit: record the attempt under the logged-in user if they
+        -- have an account (so an impersonation attempt is logged as the real
+        -- caller); otherwise (root) under the user passed in
+        SET @app_user_id = COALESCE(
+            (SELECT UserID FROM UserAccount
+             WHERE Username = SUBSTRING_INDEX(USER(), '@', 1)),
+            p_RecordedByUserID);
+
+        IF EXISTS (SELECT 1 FROM UserAccount WHERE UserID = @app_user_id) THEN
             SET @context_id = COALESCE(@context_id, UUID());
             CALL sp_WriteAuditLog('Rejected', 'Repair', p_RepairID, NULL,
                 JSON_OBJECT('Procedure',    'sp_CompleteRepair',
