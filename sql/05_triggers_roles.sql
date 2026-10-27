@@ -823,6 +823,15 @@ FOR EACH ROW
 BEGIN
     DECLARE v_Role VARCHAR(30) DEFAULT NULL;
 
+    -- The approval record is set only by the Manager's decision below:
+    -- it cannot be written or rewritten by any other update
+    IF NOT (NEW.Status IN ('Approved', 'Rejected') AND NOT (OLD.Status <=> NEW.Status))
+       AND (NOT (OLD.ApprovedByUserID <=> NEW.ApprovedByUserID)
+            OR NOT (OLD.ApprovalDateTime <=> NEW.ApprovalDateTime)) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Approval fields can only be set by the approval itself';
+    END IF;
+
     -- Record IDs never change (a changed ID would also escape the audit trail)
     IF NOT (OLD.EstimateID <=> NEW.EstimateID) THEN
         SIGNAL SQLSTATE '45000'
