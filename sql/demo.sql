@@ -277,6 +277,9 @@ ORDER BY QuantityOnHand\G
 -- 4.1 [root] What a technician is granted
 SHOW GRANTS FOR 'tech_ben'@'localhost' USING 'role_technician';
 
+SHOW GRANTS FOR 'sa_amy'@'localhost'   USING 'role_service_advisor';
+SHOW GRANTS FOR 'mgr_mike'@'localhost' USING 'role_manager';
+
 -- 4.2 Same action, authorized vs unauthorized role (SEC-01)
 -- [sa_amy] ALLOWED: the advisor extends appointment 9 to 90 minutes
 SET @app_user_id = 2;
