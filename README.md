@@ -26,15 +26,19 @@ sql/
   07_tests.sql             Automated test suite
   08_demo_accounts.sql     Optional demo roles and accounts
 scripts/build.py           Safe, fail-fast build runner
-tests/test_build.py        B1/B2 tests using a private disposable MySQL server
+scripts/database.py        MySQL session, preflight checks, and timestamped logging
+scripts/migrate.py         Ordered migration and schema verification helpers
+sql/09_schema_migrations.sql  Migration history table
+sql/migrations/            Baseline fingerprints and ordered SQL upgrades
+tests/test_build.py        Build and migration tests on a private disposable server
 ```
 
 ## Prerequisites
 
 | Requirement               | Version / Notes                                                                                 |
 | ------------------------- | ----------------------------------------------------------------------------------------------- |
-| MySQL Server              | 8.0.16 or later (CHECK constraints are enforced starting in 8.0.16). Developed on MySQL 26.7.0. |
-| MySQL command-line client | Included with MySQL Server. On macOS it is at `/usr/local/mysql/bin/mysql`.                     |
+| MySQL Server              | MySQL 8.0.18 or later; tested on MySQL Community Server 26.7.0. |
+| MySQL command-line client | MySQL 8.0.18 or later, with a successful connection to the selected server; MariaDB is refused. On macOS: `/usr/local/mysql/bin/mysql`. |
 | Python                    | 3.9 or later, for the build runner and build regression tests.                                |
 | Git                       | Any recent version                                                                              |
 | Platform                  | Developed and tested on macOS. Any OS that runs MySQL 8 works.                                  |
@@ -46,11 +50,14 @@ MySQL Workbench is optional and is only used for viewing results.
 
 ### 1. Get the files
 
-Clone the repository and check out the revision you want to build:
+After these changes are committed and available in Git, clone the repository and replace `YOUR_RELEASE_COMMIT` with that exact commit:
 
 ```bash
 git clone https://github.com/steslic/vehicle-service-maintenance-system.git
 cd vehicle-service-maintenance-system
+git checkout --detach YOUR_RELEASE_COMMIT
+git rev-parse HEAD
+git status --porcelain  # must be empty for clean-clone evidence
 ```
 
 ### 2. Build the database, load the data, and run the tests
@@ -59,7 +66,9 @@ cd vehicle-service-maintenance-system
 python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p
 ```
 
-The runner refuses an existing `vehicle_service_maintenance` database and leaves its business data and audit history unchanged. It validates every input file before executing SQL, then runs one batch with continue-on-error disabled. Missing files, SQL errors, and failed test suites produce a nonzero exit code. A failed build retains its partial database for inspection; it is never silently deleted or reused.
+Run the command with the absolute path to `scripts/build.py` if your shell is in another directory. SQL paths, Git metadata, and the default log directory are resolved relative to the checkout, not the shell directory.
+
+The runner refuses an existing `vehicle_service_maintenance` database and leaves its business data and audit history unchanged. It validates every manifest input and migration checksum before executing SQL, then runs the existing schema/data/test batch with continue-on-error disabled. Verified migrations follow on the same connection. Missing files, SQL errors, and failed test suites produce a nonzero exit code. A failed build retains its partial database for inspection; it is never silently deleted or reused.
 
 `sql/build.sql` lists the files in execution order:
 
@@ -73,8 +82,19 @@ The runner refuses an existing `vehicle_service_maintenance` database and leaves
 | 6    | `06_sample_data.sql`    | Sample data                                          |
 | 7    | `08_demo_accounts.sql`  | Demo roles/accounts, only with `--with-demo-accounts` |
 | 8    | `07_tests.sql`          | Existing automated tests and a failure gate           |
+| 9    | `09_schema_migrations.sql` | History table after baseline verification         |
+| 10   | `migrations/001_baseline.sql` | Register the baseline and object versions       |
+| 11   | `migrations/002_customer_name_index.sql` | Add a customer-name index             |
 
 Use the runner instead of piping `build.sql` or concatenating SQL files into the client. Direct execution of `build.sql` raises an error directing you to the runner.
+
+### Environment checks and logs
+
+Before database creation, reset, or migration, the runner checks the client/server versions and requires InnoDB, `REPEATABLE-READ`, autocommit, foreign-key checks, unique checks, a writable server, and `innodb_flush_log_at_trx_commit = 1` for durable migration checkpoints. SQL mode must include `STRICT_TRANS_TABLES` and `NO_ENGINE_SUBSTITUTION`, with `ANSI_QUOTES` and `NO_BACKSLASH_ESCAPES` disabled. After these checks, it pins the session SQL mode to `ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION`, so stored-object definitions are reproducible. The connection uses `utf8mb4`; new databases use `utf8mb4_0900_ai_ci`; operation timestamps use a UTC session. Existing databases are checked against their recorded object definitions.
+
+Every run writes `logs/<UTC timestamp>-<process ID>-build.log`, including refusals and SQL/test failures. The log records the source Git SHA, dirty-worktree flag, MySQL client/server/settings, executed SQL filenames and checksums, existing test results, migration operations, schema version, and final `SUCCESS`, `FAILED`, or `INTERRUPTED` status. An abrupt process/server death can leave no final status; the durable migration history then identifies unfinished work. Passwords are not placed in commands or logs.
+
+`--log-dir /absolute/path` selects another log directory. Logs are ignored by Git by default; retain a chosen clean-clone run as submission evidence. A dirty-worktree log identifies the base commit but does not claim the uncommitted changes are reproducible from that SHA. No release tag or commit is created by the runner.
 
 ### Explicit development resets
 
@@ -98,7 +118,62 @@ python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
 
 Provisioning refuses any existing demo username or role before creating or resetting a database. It never drops accounts, changes existing passwords, or adds grants to existing principals. Repeating a demo build on the same server therefore requires separately managing its demo principals or using a fresh disposable server.
 
-The default build reports **65 PASS, 1 SKIP**: T-49 inspects demo-role grants and is explicitly skipped when provisioning is disabled. With `--with-demo-accounts`, all **66 existing automated checks** run. T-11 remains the existing manual login test. Test failures are printed with their diagnostics before the failure gate aborts the build.
+The default build reports **65 PASS, 1 SKIP**: T-49 inspects demo-role grants and is explicitly skipped when provisioning is disabled. With `--with-demo-accounts`, all **66 existing automated checks** run. T-11 remains available as a separate login demonstration; the regression suite also executes its six original permission cases using real logins. Test failures are printed with their diagnostics before the failure gate aborts the build.
+
+### Schema versions and non-destructive upgrades
+
+Use the same entry point for builds and migrations. `--migrate` never runs the destructive build, sample-data loader, demo provisioning, or data-changing test suite.
+
+To demonstrate an upgrade on a new disposable database:
+
+```bash
+# Build the current baseline (version 1), including the existing database tests.
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
+    --database vsm_dev_upgrade --target-version 1
+
+# Upgrade to the latest version (version 2 adds only idx_Customer_Name).
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
+    --database vsm_dev_upgrade --migrate
+
+# Repeat: no migration SQL executes again and application timestamps stay unchanged.
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
+    --database vsm_dev_upgrade --migrate
+```
+
+A normal new build without `--target-version` finishes at the latest manifest version. The original 13 business tables, procedures, triggers, sample data, and existing indexes remain; versioning adds two metadata tables and one customer-name index.
+
+For an **unversioned existing database**, first stop application writes and take a backup. Explicitly request adoption:
+
+```bash
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
+    --database YOUR_EXISTING_DATABASE --migrate --baseline
+```
+
+This compares every business table definition (columns, keys, indexes, checks, engine, collation), view, procedure signature/body/settings, and trigger against `sql/migrations/baseline.json`. Data and AUTO_INCREMENT counters are excluded, and creator/definer account names can vary. Any missing, extra, or changed object prevents registration before any metadata DDL. Existing metadata without a valid history is also refused. The snapshot is bound by a SHA-256 digest in the baseline migration; the history-table DDL is bound the same way. Do not regenerate the snapshot to bypass a mismatch: investigate the schema difference. `--target-version 1` can register a verified baseline without applying later upgrades.
+
+For inspection, connect to the chosen database and run:
+
+```sql
+SELECT version, filename, checksum, started_at, applied_at,
+       source_commit_sha, source_dirty, status, error_message
+FROM schema_migrations ORDER BY version;
+
+SELECT object_type, object_name, migration_version,
+       definition_checksum, source_commit_sha, source_dirty
+FROM schema_object_versions ORDER BY object_type, object_name;
+```
+
+The first table records migration versions, exact file digests, database timestamps, source revisions, and status. The second exposes the last migration that changed each deployed table, view, procedure/function, or trigger. Unchanged objects retain their earlier version. For an adopted database, the source SHA identifies the verified baseline registration, not an invented historical deployment date. Later runs also reject object-definition drift outside migrations.
+
+### Adding a migration and recovering failures
+
+Keep the baseline SQL and successful migrations immutable. Add the next contiguous numbered SQL file (for example, `003_descriptive_change.sql`) and append its `SOURCE migrations/...` entry to **the existing `sql/build.sql` manifest**. There is no separate migration manifest. Every SQL migration must be listed exactly once in numeric order; gaps, unlisted files, missing historical files, changed applied checksums, and downgrade targets are refused. Migration SQL uses the database selected by the runner; it must not switch databases or manage accounts. Restore `DELIMITER ;` at the end of routine definitions.
+
+The runner holds a connection-level advisory lock throughout verification and migration, preventing two runners from upgrading the same database concurrently. Before executing each migration, it commits an `applying` history row. Only successful DDL and an atomic object-version/history update produce `applied`. SQL failure records `failed` when the server remains reachable; abrupt termination leaves `applying`. An empty history table indicates interruption during initial setup. All these incomplete states block further migrations and are never automatically replayed.
+
+MySQL DDL implicitly commits, so an index or column created before a later error may remain even though the migration failed. A transaction cannot make a whole multi-statement DDL migration atomic. See the [MySQL implicit-commit rules](https://dev.mysql.com/doc/refman/8.0/en/implicit-commit.html) and [connection-level lock behavior](https://dev.mysql.com/doc/refman/8.0/en/locking-functions.html).
+
+For this course implementation, recovery is deliberately manual: inspect the log, `schema_migrations`, and actual object definitions; restore a verified pre-run backup of the disposable target; fix an unapplied migration if necessary; rerun. Do not delete a failed history row, mark partial DDL as applied, edit an applied checksum, or assume `ROLLBACK` removed DDL. The runner offers no force/repair switch that can silently bless partial changes. Stopping application writes and retaining the backup are part of the upgrade procedure, so restoring it does not discard later user work.
 
 ### Build regression tests
 
@@ -127,8 +202,8 @@ Connect with `/usr/local/mysql/bin/mysql -u root -p` and run:
 ```sql
 USE vehicle_service_maintenance;
 
--- Tables (expect 13)
-SHOW TABLES;
+-- Base tables (expect 15: 13 business + 2 versioning metadata tables)
+SHOW FULL TABLES WHERE Table_type = 'BASE TABLE';
 
 -- Views, procedures, and triggers
 SHOW FULL TABLES WHERE Table_type = 'VIEW';

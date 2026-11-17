@@ -14,3 +14,8 @@ SOURCE 05_triggers_roles.sql
 SOURCE 06_sample_data.sql
 SOURCE 08_demo_accounts.sql
 SOURCE 07_tests.sql
+
+-- Migration infrastructure and ordered upgrades (interpreted by the runner).
+SOURCE 09_schema_migrations.sql
+SOURCE migrations/001_baseline.sql
+SOURCE migrations/002_customer_name_index.sql

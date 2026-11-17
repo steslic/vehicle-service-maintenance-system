@@ -4,7 +4,8 @@
 
 -- Existing databases must be preserved. Development resets are handled only
 -- by scripts/build.py --dev-reset, for explicitly named vsm_dev_* databases.
-CREATE DATABASE vehicle_service_maintenance;
+CREATE DATABASE vehicle_service_maintenance
+    CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
 USE vehicle_service_maintenance;
 

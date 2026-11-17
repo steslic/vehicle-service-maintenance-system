@@ -25,27 +25,30 @@ Statistics are refreshed with `ANALYZE TABLE` before each measurement. MySQL 26.
 
 ## How to Reproduce
 
-From the repository root:
+The captured outputs below are historical measurements from a sample-only build. The current canonical build also runs the database tests and installs migration metadata, so new row counts and timings can differ. Keep new output separate from that historical evidence.
+
+These performance SQL files target `vehicle_service_maintenance` explicitly. Run them only on a **separate disposable MySQL server**, using its explicit Unix socket for every command. Do not point them at the installed project server. From the repository root:
 
 ```bash
-# 1. Build the database with sample data (no tests)
-cd sql
-cat 01_schema.sql 02_indexes.sql 03_views_reports.sql 04_procedures.sql \
-    05_triggers_roles.sql 06_sample_data.sql | /usr/local/mysql/bin/mysql -u root -p
-cd ..
+# Replace this with the socket of your separate disposable MySQL server.
+DEV_SOCKET=/absolute/path/to/disposable/mysql.sock
 
-# 2. Load the performance data (-vvv prints the time of each statement)
-/usr/local/mysql/bin/mysql -vvv -u root -p < docs/performance/perf_data.sql > docs/performance/perf_data_output.txt
+# The same safe entry point and manifest used by every normal build.
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
+    --socket "$DEV_SOCKET" --database vehicle_service_maintenance
 
-# 3. Run each optimization record
-/usr/local/mysql/bin/mysql -t -u root -p < docs/performance/OPT-01_common_repairs_covering_index.sql > docs/performance/OPT-01_output.txt
-/usr/local/mysql/bin/mysql -t -u root -p < docs/performance/OPT-02_daily_appointments_range_filter.sql > docs/performance/OPT-02_output.txt
-/usr/local/mysql/bin/mysql -t -u root -p < docs/performance/OPT-03_auditlog_keyset_pagination.sql > docs/performance/OPT-03_output.txt
-
-# 4. Rebuild normally afterwards to remove the performance data
-cd sql
-/usr/local/mysql/bin/mysql --commands=ON -u root -p < build.sql
+mkdir -p logs/performance
+/usr/local/mysql/bin/mysql --protocol=SOCKET --socket="$DEV_SOCKET" -vvv -u root -p \
+    < docs/performance/perf_data.sql > logs/performance/perf_data_output.txt
+/usr/local/mysql/bin/mysql --protocol=SOCKET --socket="$DEV_SOCKET" -t -u root -p \
+    < docs/performance/OPT-01_common_repairs_covering_index.sql > logs/performance/OPT-01_output.txt
+/usr/local/mysql/bin/mysql --protocol=SOCKET --socket="$DEV_SOCKET" -t -u root -p \
+    < docs/performance/OPT-02_daily_appointments_range_filter.sql > logs/performance/OPT-02_output.txt
+/usr/local/mysql/bin/mysql --protocol=SOCKET --socket="$DEV_SOCKET" -t -u root -p \
+    < docs/performance/OPT-03_auditlog_keyset_pagination.sql > logs/performance/OPT-03_output.txt
 ```
+
+Discard the disposable server after measuring. The build runner refuses to overwrite an existing database; it never resets the project database. The index experiment temporarily changes the disposable schema, so it is not an input to subsequent migration verification.
 
 ## Data Volume
 

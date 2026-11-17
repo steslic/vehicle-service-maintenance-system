@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safely execute the SQL build; reset only explicitly disposable dev databases."""
+"""Safely build or migrate the database, with environment checks and timestamped logs."""
 
 import argparse
 import getpass
@@ -8,6 +8,9 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+
+from database import checksum, RunLog, Session, source_revision, verify_environment
+from migrate import HISTORY_FILE, load_migrations, run_migrations
 
 
 PROJECT_DATABASE = "vehicle_service_maintenance"
@@ -18,24 +21,36 @@ DEMO_PRINCIPALS = (
 )
 
 
-def load_build(sql_dir, database, with_demo_accounts):
-    """Read every input before connecting, and flatten SOURCE into one batch."""
+def load_inputs(sql_dir):
+    """Validate and read the single ordered manifest before connecting."""
     manifest = (sql_dir / "build.sql").read_text()
-    names = re.findall(r"^SOURCE\s+([0-9]{2}_[a-z_]+\.sql)\s*$", manifest, re.MULTILINE)
+    names = re.findall(r"^SOURCE\s+((?:migrations/)?[0-9]{2,3}_[a-z0-9_]+\.sql)\s*$",
+                       manifest, re.MULTILINE)
     if not names or len(names) != len(set(names)):
         raise ValueError("Build input list is empty or contains duplicates")
-    source_lines = re.findall(r"^SOURCE\b.*$", manifest, re.MULTILINE)
-    if len(source_lines) != len(names):
+    if len(re.findall(r"^SOURCE\b.*$", manifest, re.MULTILINE)) != len(names):
         raise ValueError("Invalid SOURCE entry in sql/build.sql")
-    chunks = [f"SET @build_with_demo_accounts = {int(with_demo_accounts)};\n"]
+    inputs = {}
     for name in names:
-        sql = (sql_dir / name).read_text()  # Missing inputs fail before any DDL.
-        if re.search(r"^\s*SOURCE\b", sql, re.MULTILINE | re.IGNORECASE):
+        data = (sql_dir / name).read_bytes()
+        if re.search(r"^\s*SOURCE\b", data.decode("utf-8"), re.MULTILINE | re.IGNORECASE):
             raise ValueError(f"Nested SOURCE is not supported: {name}")
+        inputs[name] = data
+    return inputs
+
+
+def load_build(sql_dir, database, with_demo_accounts, inputs=None):
+    """Flatten the existing SQL build into one fail-fast batch."""
+    inputs = load_inputs(sql_dir) if inputs is None else inputs
+    chunks = [f"SET @build_with_demo_accounts = {int(with_demo_accounts)};\n"]
+    for name, data in inputs.items():
+        if name == HISTORY_FILE or name.startswith("migrations/"):
+            continue  # The migration runner records and applies these separately.
         if name == DEMO_FILE and not with_demo_accounts:
+            chunks.append(f"SELECT 'SKIP optional {name}';\n")
             continue
-        sql = re.sub(r"\b" + PROJECT_DATABASE + r"\b", database, sql)
-        chunks.append(f"\n-- Build input: {name}\n{sql}\n")
+        sql = re.sub(r"\b" + PROJECT_DATABASE + r"\b", database, data.decode("utf-8"))
+        chunks.append(f"\nSELECT 'OPERATION {name} sha256={checksum(data)}';\n{sql}\n")
     return "".join(chunks)
 
 
@@ -52,6 +67,10 @@ def main(argv=None):
     parser.add_argument("--socket")
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
+    parser.add_argument("--migrate", action="store_true", help="Upgrade an existing database; never load sample data/tests")
+    parser.add_argument("--baseline", action="store_true", help="Verify/register an unversioned database before upgrading")
+    parser.add_argument("--target-version", type=int, help="Stop at this migration version (default: latest)")
+    parser.add_argument("--log-dir", type=Path, help="Build log directory (default: repository logs/)")
     args = parser.parse_args(argv)
 
     if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", args.database):
@@ -59,12 +78,29 @@ def main(argv=None):
     if args.dev_reset and not re.fullmatch(r"vsm_dev_[a-z0-9_]+", args.database):
         parser.error("--dev-reset is development-only and requires a vsm_dev_* database")
 
+    if args.migrate and (args.dev_reset or args.with_demo_accounts):
+        parser.error("--migrate cannot reset a database or provision demo accounts")
+    if args.baseline and not args.migrate:
+        parser.error("--baseline is only valid with --migrate")
+
+    root = Path(__file__).resolve().parent.parent
+    log = None
+    status = "FAILED"
     try:
-        sql_dir = Path(__file__).resolve().parent.parent / "sql"
-        sql = load_build(sql_dir, args.database, args.with_demo_accounts)
-        # Keep client option files from enabling --force or selecting another server.
+        log = RunLog(args.log_dir or root / "logs")
+        log.write(f"MODE: {'migrate' if args.migrate else 'build'}; DATABASE: {args.database}")
+        sha, dirty = source_revision(root)
+        log.write(f"SOURCE COMMIT: {sha}; WORKTREE DIRTY: {str(dirty).lower()}")
+        inputs = load_inputs(root / "sql")
+        migrations, snapshot = load_migrations(root / "sql", inputs)
+        if args.target_version is not None and args.target_version not in [m[0] for m in migrations]:
+            raise ValueError("Target version is not in sql/build.sql")
+        sql = load_build(root / "sql", args.database, args.with_demo_accounts, inputs)
+        client_version = subprocess.check_output([args.mysql, "--no-defaults", "--version"], text=True).strip()
+        # Explicit options override local defaults and keep failures from continuing/reconnecting.
         client = [args.mysql, "--no-defaults", "--batch", "--raw", "--skip-column-names",
-                  "--skip-force", "--skip-reconnect", f"--user={args.user}"]
+                  "--skip-force", "--skip-reconnect", "--unbuffered", "--binary-mode",
+                  "--default-character-set=utf8mb4", f"--user={args.user}"]
         if args.socket:
             client += ["--protocol=SOCKET", f"--socket={args.socket}"]
         else:
@@ -76,40 +112,48 @@ def main(argv=None):
         if args.password:
             env["MYSQL_PWD"] = getpass.getpass("MySQL password: ")
 
-        def query(statement):
-            result = subprocess.run(client, input=statement, text=True, env=env,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if result.returncode:
-                raise RuntimeError(result.stderr.strip() or "MySQL preflight failed")
-            return result.stdout.strip()
-
-        exists = query("SELECT COUNT(*) FROM information_schema.SCHEMATA "
-                       f"WHERE SCHEMA_NAME = '{args.database}';")
-        if exists != "0" and not args.dev_reset:
-            raise ValueError(f"Refusing existing database '{args.database}'; contents were not changed")
-
-        if args.with_demo_accounts:
-            names = ", ".join(f"'{name}'" for name in DEMO_PRINCIPALS)
-            collisions = query(f"SELECT User, Host FROM mysql.user WHERE User IN ({names});")
-            if collisions:
-                raise ValueError("Refusing demo provisioning: existing users/roles would collide:\n"
-                                 + collisions)
-
-        if args.dev_reset:
-            sql = f"DROP DATABASE IF EXISTS `{args.database}`;\n" + sql
-        # CREATE DATABASE deliberately has no IF NOT EXISTS, closing the race
-        # between the preflight and another build creating the same database.
-        print(f"Building {args.database}" + (" (DEVELOPMENT RESET)" if args.dev_reset else ""), flush=True)
-        result = subprocess.run(client, input=sql, text=True, env=env)
-        if result.returncode:
-            print("Build failed; stopped at the first unhandled SQL error. "
-                  "A partially built database is retained for inspection.", file=sys.stderr)
-            return result.returncode if result.returncode > 0 else 1
-        print(f"Build succeeded: {args.database}")
+        with Session(client, env, log) as session:
+            verify_environment(session, client_version, log)
+            exists = session.run("SELECT COUNT(*) FROM information_schema.SCHEMATA "
+                                 f"WHERE SCHEMA_NAME = '{args.database}';") != "0"
+            if args.migrate:
+                if not exists:
+                    raise ValueError("Migration requires an existing database")
+                log.write("TESTS: not run during migration (existing business data is preserved)")
+            else:
+                if exists and not args.dev_reset:
+                    raise ValueError(f"Refusing existing database '{args.database}'; contents were not changed")
+                if args.with_demo_accounts:
+                    names = ", ".join(f"'{name}'" for name in DEMO_PRINCIPALS)
+                    collisions = session.run(f"SELECT User, Host FROM mysql.user WHERE User IN ({names});")
+                    if collisions:
+                        raise ValueError("Refusing demo provisioning: existing users/roles would collide:\n" + collisions)
+                if args.dev_reset:
+                    log.write(f"OPERATION DEVELOPMENT RESET: {args.database}")
+                    sql = f"DROP DATABASE IF EXISTS `{args.database}`;\n" + sql
+                # CREATE without IF NOT EXISTS also guards concurrent creators.
+                log.write(f"Building {args.database}")
+                session.run(sql, echo=True)
+                log.write("DATABASE TEST SUITE: PASS (see individual results and summary above)")
+            run_migrations(session, client, env, log, args.database, inputs, migrations, snapshot,
+                           sha, dirty, baseline=(not args.migrate or args.baseline), target=args.target_version)
+        log.write(f"{'Migration' if args.migrate else 'Build'} succeeded: {args.database}")
+        status = "SUCCESS"
         return 0
-    except (OSError, ValueError, RuntimeError) as error:
-        print(f"Build refused: {error}", file=sys.stderr)
+    except KeyboardInterrupt:
+        status = "INTERRUPTED"
+        if log:
+            log.write("Interrupted; inspect migration history before retrying")
+        return 130
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        message = f"{'Migration' if args.migrate else 'Build'} refused/failed: {error}"
+        if log:
+            log.write(message)
+        print(message, file=sys.stderr)
         return 1
+    finally:
+        if log:
+            log.close(status)
 
 
 if __name__ == "__main__":
