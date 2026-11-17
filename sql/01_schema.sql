@@ -2,9 +2,9 @@
 -- 01_schema.sql
 -- Creates the database schema and all 13 core tables
 
-DROP DATABASE IF EXISTS vehicle_service_maintenance;
-
-CREATE DATABASE IF NOT EXISTS vehicle_service_maintenance;
+-- Existing databases must be preserved. Development resets are handled only
+-- by scripts/build.py --dev-reset, for explicitly named vsm_dev_* databases.
+CREATE DATABASE vehicle_service_maintenance;
 
 USE vehicle_service_maintenance;
 

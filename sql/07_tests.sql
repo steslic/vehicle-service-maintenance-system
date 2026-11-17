@@ -165,6 +165,15 @@ BEGIN
     SET @tst_captured = v_Message;
 END //
 
+DROP PROCEDURE IF EXISTS tst_FailIfNeeded //
+CREATE PROCEDURE tst_FailIfNeeded()
+BEGIN
+    IF EXISTS (SELECT 1 FROM TestResult WHERE Result = 'FAIL') THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Test suite failed; see FAIL rows above';
+    END IF;
+END //
+
 DELIMITER ;
 
 -- Fixed future time used by the appointment tests (T-03, T-04, T-05, FR-15)
@@ -314,9 +323,14 @@ SET @views = (SELECT COUNT(*) FROM mysql.tables_priv
               WHERE User = 'role_technician'
                 AND LOWER(Table_name) IN ('vw_myappointments', 'vw_myrepairs'));
 
-CALL tst_Assert('T-49', 'Technician role reads only through the filtered views',
-    @base = 0 AND @views = 2,
-    CONCAT('Base-table grants: ', @base, ' (expected 0), view grants: ', @views, ' (expected 2)'));
+-- The safe build does not provision server-wide demo principals by default.
+-- Keep the original privilege check when demo provisioning is requested (or
+-- this suite is run directly against an already provisioned demo database).
+INSERT INTO TestResult (TestID, Description, Result, Detail)
+VALUES ('T-49', 'Technician role reads only through the filtered views',
+    IF(@build_with_demo_accounts = 0, 'SKIP', IF(@base = 0 AND @views = 2, 'PASS', 'FAIL')),
+    IF(@build_with_demo_accounts = 0, 'Demo provisioning disabled; use --with-demo-accounts on a disposable server',
+       CONCAT('Base-table grants: ', @base, ' (expected 0), view grants: ', @views, ' (expected 2)')));
 
 -- T-50 / FR-14: an appointment cannot be closed while a repair is open
 -- (appointment 6 is In Progress and its repair 6 is still In Progress)
@@ -1414,6 +1428,10 @@ FROM
 GROUP BY
     Result;
 
+-- An unhandled SQL error makes the batch client and build runner fail.
+-- Print all results first so the original test diagnostics remain visible.
+CALL tst_FailIfNeeded();
+
 -- =====================================================================
 -- 6. CLEANUP (removes the test harness; test data changes remain)
 -- =====================================================================
@@ -1424,3 +1442,5 @@ DROP PROCEDURE IF EXISTS tst_ExpectSuccess;
 DROP PROCEDURE IF EXISTS tst_Assert;
 
 DROP PROCEDURE IF EXISTS tst_CaptureError;
+
+DROP PROCEDURE IF EXISTS tst_FailIfNeeded;

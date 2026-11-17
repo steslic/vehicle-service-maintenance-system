@@ -34,7 +34,7 @@ INSERT INTO Technician (TechnicianID, Name, Phone, Email, ActiveStatus) VALUES
 
 -- =====================================================================
 -- 2. USER ACCOUNTS (not audited)
--- Usernames match the demo MySQL accounts created in 05_triggers_roles.sql
+-- Usernames match the optional demo MySQL accounts in 08_demo_accounts.sql
 -- =====================================================================
 INSERT INTO UserAccount (UserID, Username, Name, RoleType, TechnicianID) VALUES
     (1, 'mgr_mike',   'Mike Johnson', 'Manager',         NULL),

@@ -1,6 +1,10 @@
 -- Vehicle Service and Maintenance Management System
--- Run from the sql directory
--- /usr/local/mysql/bin/mysql --commands=ON -u root -p < build.sql
+-- Ordered input list for scripts/build.py. The runner validates and inlines
+-- these files so SOURCE cannot hide an error or a missing file.
+-- Demo provisioning is optional and runs before the existing test suite.
+
+SIGNAL SQLSTATE '45000'
+SET MESSAGE_TEXT = 'Use python3 scripts/build.py; direct SOURCE builds are disabled';
 
 SOURCE 01_schema.sql
 SOURCE 02_indexes.sql
@@ -8,4 +12,5 @@ SOURCE 03_views_reports.sql
 SOURCE 04_procedures.sql
 SOURCE 05_triggers_roles.sql
 SOURCE 06_sample_data.sql
+SOURCE 08_demo_accounts.sql
 SOURCE 07_tests.sql

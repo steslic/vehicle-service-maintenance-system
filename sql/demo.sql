@@ -25,11 +25,11 @@
 -- =====================================================================
 
 -- 1.1 In shell (documented README process):
---   git clone --branch v1.2 https://github.com/steslic/vehicle-service-maintenance-system.git
+--   git clone https://github.com/steslic/vehicle-service-maintenance-system.git
 --   cd vehicle-service-maintenance-system/sql
---   /usr/local/mysql/bin/mysql --commands=ON -u root -p < build.sql
+--   python3 ../scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p --with-demo-accounts
 
--- run just the tests: /usr/local/mysql/bin/mysql -t -u root -p vehicle_service_maintenance < 07_tests.sql
+-- Tests already run during the build and change sample data; use a fresh database for a new run.
 -- Point 06 load summary and the final PASS count (no FAIL rows)
 
 -- 1.2 Verification (root terminal)
