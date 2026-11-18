@@ -2,6 +2,8 @@
 
 Schema versions 3 and 4 extend the existing model. Versions 1 and 2 and the baseline fingerprint file remain unchanged. Both new builds and upgrades apply the same ordered SQL migrations through `scripts/build.py` and `sql/build.sql`.
 
+Version 5 adds [temporal audit history](temporal-audit.md) for all business and durable reference/security policy tables. It reuses these verified actors and protected procedure contexts; physical developer/admin metadata maintenance is attributed to its actual session with no invented person.
+
 ## What changed
 
 The existing database already enforced its four lifecycles, logged operational changes, checked named-user impersonation at audit time, and restricted technician access through filtered views. This phase addresses the remaining domain-membership and provenance gaps without replacing those workflows:

@@ -50,7 +50,8 @@ class BuildAccountTests(support.DisposableMySQLTestCase):
         self.assertEqual(before, self.snapshot())
         # The reference reader is deliberately added by migration 003.
         actual = self.admin_scalar(query)
-        self.assertEqual([line for line in actual.splitlines() if 'sp_listindicatorvalues' not in line.lower()],
+        self.assertEqual([line for line in actual.splitlines()
+                          if 'sp_listindicatorvalues' not in line.lower() and 'sp_listaudittrail' not in line.lower()],
                          before_grants.splitlines())
         self.assert_no_developer_grant_authority()
 

@@ -8,9 +8,9 @@
 | Prepared by    | Sebastian Teslic                                  |
 | Course/section | 01:198:437                                        |
 | Date           | 10/25/2026                                        |
-| Version        | 1.5                                               |
+| Version        | 1.6                                               |
 
-The detailed table specifications below describe the original business baseline. Schema versions 3 and 4 add reference metadata, verified session identities, and provenance invariants. Their current design and validation contracts are documented in [Reference values, identity, and provenance](reference-and-identity.md); the baseline specifications and historical test results are retained for traceability.
+The detailed table specifications below describe the original business baseline. Schema versions 3 and 4 add reference metadata, verified session identities, and provenance invariants. Their current design and validation contracts are documented in [Reference values, identity, and provenance](reference-and-identity.md); the baseline specifications and historical test results are retained for traceability. Schema version 5 adds mirrored temporal history for all 12 business tables and five durable reference/security tables; see [Temporal history and audit trail](temporal-audit.md) for the current audit design and coverage matrix.
 
 ## 2. Design overview
 
@@ -566,34 +566,32 @@ The bulk load in `perf_data.sql` applied 70,000 inserts and updates through the 
 
 ### Audit and traceability design
 
-**Audited events.** Creates, updates, deletes, and status changes on ServiceAppointment, Repair, RepairEstimate, Invoice, and PartsUsage, and estimate and invoice line items; estimate approval and rejection; invoice and estimate finalization; appointment cancellation and rescheduling; technician reassignment; and every inventory quantity change.
+**Temporal versions (version 5).** Each of Customer, Vehicle, Technician, Part, UserAccount, ServiceAppointment, Repair, RepairEstimate, EstimateLineItem, Invoice, InvoiceLineItem, and PartsUsage has a matching history table with every source column. IndicatorValue, UserRolePolicy, DatabasePrincipal, RoleProcedurePermission, and PrincipalDelegation also have histories. Source generated discriminators are copied as ordinary snapshot values. History has no foreign keys back to the live business or identity rows, so deleting an original record does not delete or invalidate its evidence.
 
-**Audit content.** Each AuditLog row records the acting user (UserID, from `@app_user_id`), timestamp, action, affected entity, affected record ID, and the previous and new values as JSON, and a ContextID linking all rows written by one procedure call. Inventory changes also store the reason. Updates that change nothing are not logged (T-23). Create and Delete rows store the full row; Update rows store every non-key column before and after, so any change is recorded. Record IDs and parent links cannot be changed, so no change escapes the audit trail.
+**Validity and initialization.** AFTER INSERT opens a history version. A real UPDATE closes the previous version and inserts the next, with equal boundaries. DELETE closes the version and preserves its closing actor, session, context, and time. No-op updates produce no event or version. Unique current/version indexes and current locking reads serialize each record's timeline. All event/validity timestamps have microsecond precision and come from a database-owned UTC clock. Existing records receive one current Snapshot version with a real observation time but NULL historical start/actor fields; initialization invents no past changes or validity periods.
 
-**Context.** Each stored procedure generates a UUID at the start of its transaction and stores it in `@context_id`; `sp_WriteAuditLog` copies it into the ContextID column of every audit row written during the call, and the procedure clears it on commit or rollback. One completed repair therefore produces a group of rows (parts usage, inventory changes, repair completion) that can be retrieved with a single lookup (T-47). Direct statements outside a procedure have no ContextID.
+**Verified attribution.** Ordinary changes use migration 004's session/person resolver and protected OperationContext; caller identity/context/timestamp variables cannot manufacture provenance. Each version and closure records the actual USER() separately from the verified responsible UserID. Physical vsm_developer/vsm_admin maintenance records the actual session and NULL person, ignoring any claimed on-behalf-of identity. Inventory quantity adjustment reasons are retained. Application roles cannot call the internal writer or write its short-lived TemporalWriteContext.
 
-**Failures.** When a stored procedure fails, its EXIT handler saves the error message, rolls back the work, then writes one audit row with Action 'Rejected' that records the user, the attempted request, and the error (T-48). The row is written after the rollback so it is not undone. Rejections of direct statements (trigger, constraint, or privilege errors outside a procedure) are not recorded, because a failed statement rolls back anything its trigger writes and privilege errors occur before any trigger runs; the server's audit log feature or an application layer would be needed for those.
+**Atomicity and protection.** Source rows, history versions, and the compact TemporalEvent directory participate in the same InnoDB statement/transaction. History maintenance never starts or commits a transaction. A later failure rolls back successful history as well as business writes. History INSERT/closing UPDATE require a protected per-connection/entity context; history DELETE and event UPDATE/DELETE are rejected. Native roles receive no direct history DML. Trusted schema owners retain DDL privileges and are not claimed to be cryptographically unable to tamper.
 
-**Protection.** Audit rows are inserted only by triggers through `sp_WriteAuditLog`. No role has INSERT, UPDATE, or DELETE on AuditLog; Managers have SELECT only, and `trg_AuditLog_Protect` rejects any update or delete (T-22).
-
-**Reconstructing history.** The full lifecycle of a record is read in time order using `idx_AuditLog_Entity_Record`:
+**Denormalized audit reader.** vw_AuditTrail combines all 17 histories with the event directory to expose one row per successful change: entity, JSON record identifier, operation, changed attributes, before/after values, responsible person, session, UTC event time, context, and reason. sp_ListAuditTrail filters by entity, key, person and date interval, seeks by descending EventID, bounds pages to 1–200 events, and hydrates only those event payloads. It leaves the caller's transaction open. Manager read grants are assigned through the separate admin connection; application history writes remain forbidden. No GUI or service is included.
 
 ```sql
-SELECT a.`Timestamp`, u.Name, u.RoleType, a.Action, a.PreviousValue, a.NewValue
-FROM AuditLog a
-JOIN UserAccount u ON u.UserID = a.UserID
-WHERE a.AffectedEntity = 'Repair' AND a.AffectedRecordID = 6
-ORDER BY a.`Timestamp`, a.AuditLogID;
+CALL sp_ListAuditTrail('Repair', JSON_OBJECT('RepairID', 6), NULL,
+                      NULL, NULL, NULL, 50);
 ```
 
-All rows written by one procedure call:
+**Existing generic log.** AuditLog remains append-only, with all original records, operational success triggers, and procedure rejection handling preserved. New master/reference/security coverage uses temporal history rather than adding duplicate generic success rows. Existing operational counts and inventory-reason JSON remain compatible with baseline reports/tests. The temporal view excludes pre-deployment snapshots and generic rejections; older generic evidence remains independently available.
 
 ```sql
-SELECT AuditLogID, UserID, Action, AffectedEntity, AffectedRecordID, `Timestamp`
+SELECT AuditLogID, UserID, SessionAccount, Action, AffectedEntity,
+       AffectedRecordID, `Timestamp`, ContextID, NewValue
 FROM AuditLog
-WHERE ContextID = '<context id>'
-ORDER BY AuditLogID;
+WHERE Action = 'Rejected'
+ORDER BY AuditLogID DESC;
 ```
+
+**Limits and evolution.** Native account/GRANT changes, privileged DDL, and rejected direct SQL/privilege operations still need later server-level auditing or controlled interfaces. Historical changes before deployment cannot be reconstructed from current rows. Stop application writes before migration 005's snapshot/trigger installation. Future business-column changes must extend the corresponding history table, triggers, and read projections in a new migration; the frozen generator must not rewrite applied SQL. See [the temporal audit reference](temporal-audit.md) for all 19 new tables, 105 triggers, 108 indexes, two procedures, the view, performance costs, security boundaries, and test mappings.
 
 ### Known limitations
 
@@ -601,13 +599,13 @@ ORDER BY AuditLogID;
 - **Managers retain their direct completion override.** Version 4 verifies the assigned technician, restricts completion-field changes to completion, and writes the database clock. A dedicated reasoned override procedure remains future work; ordinary technician completion still uses sp_CompleteRepair.
 - **Only stored-procedure failures are audited.** Public procedure handlers record rejection identity, including the actual session and a NULL human when no person was verified. Direct SQL and native privilege rejections outside procedures still need separate audit coverage. The procedure transaction-ownership contract also remains separate work.
 - **Technicians can read all vehicles, parts, and parts usage.** Row-level filtering covers appointments and repairs (`vw_MyAppointments`, `vw_MyRepairs`); the other tables contain no customer information.
-- **Master-data changes are not audited.** Changes to Customer, Vehicle, Technician (including deactivation), and Part details other than quantity (such as price) are not recorded in AuditLog. Auditing covers operational and financial records; the same trigger pattern could be applied to these tables.
+- **Master data and policy now have temporal coverage.** Version 5 records Customer, Vehicle, Technician activation, all Part attributes, UserAccount role/profile changes, reference values, principal mappings, role permissions, and delegations in mirrored history. Their generic AuditLog success coverage is intentionally unchanged.
 - **Approved estimates can still be edited until they are finalized.** After approval, an advisor can change the estimate's total and line items without a new approval; records are locked only once Finalized. The approval fields (`ApprovedByUserID`, `ApprovalDateTime`) are protected and can be set only by the approval itself, and the total must equal the sum of the line items to finalize. Every change is audited under the real user. Fix: lock an estimate once it is decided (Approved, Rejected, Expired), allowing only the move to Finalized, or require re-approval after an edit.
 - **Finalized invoices cannot be voided or corrected.** Invoices have only Draft and Finalized statuses, and each appointment can have one invoice, so a finalized error cannot be reversed.
 
 ## 13. Test plan and acceptance criteria
 
-Automated tests are in `07_tests.sql` and run as part of `build.sql`. Expected rejections are caught and checked against the expected error message, so a test passes only if it fails for the right reason. Tests run in three groups (read-only reports, rejected operations, then operations that change data) so that no test alters data another test depends on. T-11 is run manually because MySQL privileges apply to the logged-in account. Latest run: 66 of 66 automated checks passed.
+Automated tests are in `07_tests.sql` and run as part of `build.sql`. Expected rejections are caught and checked against the expected error message, so a test passes only if it fails for the right reason. Tests run in three groups (read-only reports, rejected operations, then operations that change data) so that no test alters data another test depends on. T-11 is run manually because MySQL privileges apply to the logged-in account. The original 66 SQL acceptance checks run before numbered upgrades (65 plus one skip without optional demo accounts). The complete Python suite exercises the upgraded schema and includes all existing 64 regressions plus 20 temporal tests in `tests/test_temporal_history.py`; it runs only private disposable servers, with no manual password input. Current execution evidence is retained in `logs/temporal-audit-regression-results.txt`.
 
 ### Test harness
 
@@ -693,7 +691,7 @@ Statements are passed as text and run with `PREPARE`/`EXECUTE`. Results are stor
 | FR-05: Validate appointment data               | Vehicle, Technician, ServiceAppointment                                     | FKs; validation in `sp_CreateServiceAppointment`                                                                                                                                                                                               | T-02; T-03; T-32                                                         |
 | FR-06: Track technician workload               | Technician → ServiceAppointment                                             | TechnicianID FK; `vw_TechnicianWorkload`; technician/date index                                                                                                                                                                                | T-16; RQ-05 Shop Workload Report                                         |
 | FR-07: Restrict access based on role           | UserAccount, protected operational tables                                   | RoleType CHECK; `role_service_advisor`, `role_technician`, `role_manager`; EXECUTE granted on procedures; manager-role check in `trg_RepairEstimate_Validate`                                                                                  | T-11; T-27; T-29; T-31; T-55                                             |
-| FR-08: Maintain audit history                  | UserAccount → AuditLog; audited operational tables                          | AuditLog FKs; audit triggers on ServiceAppointment, Repair, RepairEstimate, Invoice, Part, PartsUsage; `trg_AuditLog_Protect`; `@app_user_id`; `idx_AuditLog_Entity_Record`                                                                    | T-10; T-22; T-23; T-25; T-28; T-33; T-54; T-57                           |
+| FR-08: Maintain audit history                  | UserAccount → AuditLog; audited operational tables                          | Mirrored histories for 17 business/policy sources; TemporalEvent; history/protection triggers; verified session/person/context; vw_AuditTrail and sp_ListAuditTrail; retained generic audit/rejection triggers and idx_AuditLog_Entity_Record                                                                    | T-10; T-22; T-23; T-25; T-28; T-33; T-54; T-57                           |
 | FR-09: Report common repairs and parts revenue | Repair, Part, PartsUsage                                                    | RQ-03 and RQ-06 report queries; GROUP BY, COUNT(), SUM(); `idx_Repair_Status_Type`                                                                                                                                                             | T-17; RQ-03 Common Repairs Report; RQ-06 Parts Revenue Report            |
 | FR-10: Create repair estimates and invoices    | ServiceAppointment, RepairEstimate, Invoice, UserAccount                    | Appointment FKs; CreatedByUserID FKs; status checks; UNIQUE AppointmentID                                                                                                                                                                      | Estimate/invoice creation demonstration                                  |
 | FR-11: Manage part inventory                   | Part                                                                        | PartID PK; PartNumber UNIQUE; inventory/cost/price CHECK constraints                                                                                                                                                                           | T-28; T-34; RQ-04 Low Parts Inventory Report                             |

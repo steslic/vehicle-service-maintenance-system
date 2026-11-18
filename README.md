@@ -12,6 +12,7 @@ docs/
   tdd.md                   Technical Design Document
   FRD.md                   Functional Requirements Document
   build-accounts.md        Detailed account privileges and provisioning reference
+  temporal-audit.md        Temporal history, audit reader, and coverage reference
   vehicle-service-erd.drawio  Data model / ER diagram (draw.io)
   vehicle-service-erd.svg  Data model / ER diagram (svg)
   erd.md                   ER diagram explanation
@@ -30,11 +31,13 @@ scripts/build.py           Safe, fail-fast build runner
 scripts/database.py        MySQL session, preflight checks, and timestamped logging
 scripts/migrate.py         Ordered migration and schema verification helpers
 scripts/accounts.py        Explicit bootstrap and administrator account provisioning
+scripts/generate_temporal_history.py  Development-only generator for frozen migration 005
 sql/09_schema_migrations.sql  Migration history table
 sql/migrations/            Baseline and ordered upgrades through reference/identity metadata
 tests/test_build.py        Build and migration regression tests
 tests/test_build_accounts.py  Developer/admin separation and denied-operation tests
 tests/test_reference_identity.py  Reference, actor, and provenance regressions
+tests/test_temporal_history.py  Temporal versions, audit coverage, and pagination regressions
 tests/mysql_test_support.py  Shared private disposable MySQL server harness
 ```
 
@@ -113,7 +116,7 @@ python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql \
     -u vsm_developer -p --admin-user vsm_admin --admin-password
 ```
 
-At `MySQL password:`, enter the **existing developer password from step 2**. If administrative work is required, `Administrative MySQL password:` asks for the **existing admin password from step 2**. The standard command above creates no account passwords; optional demo-account creation is a separate opt-in below. The developer performs schema/data/test operations; the separate admin connection performs optional demo provisioning and temporary routine grants required by migrations 003 and 004. The build defaults to these two account names, refuses root, and never falls back to another account.
+At `MySQL password:`, enter the **existing developer password from step 2**. If administrative work is required, `Administrative MySQL password:` asks for the **existing admin password from step 2**. The standard command above creates no account passwords; optional demo-account creation is a separate opt-in below. The developer performs schema/data/test operations; the separate admin connection performs optional demo provisioning, temporary routine grants required by migrations 003 and 004, and the scoped audit-reader grants in migration 005. The build defaults to these two account names, refuses root, and never falls back to another account.
 
 Run the command with the absolute path to `scripts/build.py` if your shell is in another directory. SQL paths, Git metadata, and the default log directory are resolved relative to the checkout, not the shell directory.
 
@@ -131,7 +134,7 @@ python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql \
     -u vsm_developer -p --admin-user vsm_admin --admin-password
 ```
 
-Enter the **existing developer password**, then the **existing admin password if prompted**. Migration does not create accounts or passwords and never reloads sample data or runs data-changing SQL acceptance tests. A fresh build already applies all migrations through version 004; running this command immediately afterward verifies the schema and makes no changes. Baseline builds through version 002 without demo accounts and already-current migrations with developer-owned routines need no admin connection, so the admin prompt is not shown. Legacy-definer metadata inspection may require the admin as explained in [the technical reference](docs/build-accounts.md).
+Enter the **existing developer password**, then the **existing admin password if prompted**. Migration does not create accounts or passwords and never reloads sample data or runs data-changing SQL acceptance tests. A fresh build already applies all migrations through version 005; running this command immediately afterward verifies the schema and makes no changes. Baseline builds through version 002 without demo accounts and already-current migrations with developer-owned routines need no admin connection, so the admin prompt is not shown. Legacy-definer metadata inspection may require the admin as explained in [the technical reference](docs/build-accounts.md).
 
 ### Build manifest
 
@@ -152,6 +155,7 @@ Enter the **existing developer password**, then the **existing admin password if
 | 11   | `migrations/002_customer_name_index.sql` | Add a customer-name index             |
 | 12   | `migrations/003_indicator_values.sql` | Reference catalog, domain bindings, dropdowns/report labels |
 | 13   | `migrations/004_session_identity_and_provenance.sql` | Verified actors and provenance guards |
+| 14   | `migrations/005_temporal_history.sql` | Mirrored temporal history, complete data-change coverage, and paginated audit reader |
 
 Use the runner instead of piping `build.sql` or concatenating SQL files into the client. Direct execution of `build.sql` raises an error directing you to the runner.
 
@@ -200,7 +204,7 @@ To demonstrate an upgrade on a new disposable database:
 python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p --admin-password \
     --socket "$DEV_SOCKET" --database vsm_dev_upgrade --target-version 1
 
-# Upgrade to the latest version (currently 4).
+# Upgrade to the latest version (currently 5).
 python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p --admin-password \
     --socket "$DEV_SOCKET" --database vsm_dev_upgrade --migrate
 
@@ -209,7 +213,7 @@ python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p 
     --socket "$DEV_SOCKET" --database vsm_dev_upgrade --migrate
 ```
 
-A normal new build without `--target-version` finishes at the latest manifest version (currently 004). Migrations 001 through 004 remain immutable; the next new migration is 005. Migrations 003 and 004 add reference/identity metadata and replace the affected procedures and guards while retaining existing business rows and lifecycle transitions. See [Reference values, identity, and provenance](docs/reference-and-identity.md) for the domain inventory, delegation setup, and remaining workflow work.
+A normal new build without `--target-version` finishes at the latest manifest version (currently 005). Migrations 001 through 005 remain immutable; the next new migration is 006. Migrations 003 and 004 add reference/identity metadata and provenance guards; migration 005 adds temporal history while retaining existing business rows, generic audit records, and lifecycle transitions. See [Reference values, identity, and provenance](docs/reference-and-identity.md) and [Temporal history and audit trail](docs/temporal-audit.md).
 
 For an **unversioned existing database**, first stop application writes and take a backup. Explicitly request adoption:
 
@@ -248,9 +252,27 @@ Registered people are resolved from the full database session login. A caller-su
 
 After migration 004, `@app_user_id` is a checked compatibility hint, **not a trusted identity source**. Setting it cannot authenticate a person, impersonate another user, authorize a service delegation, or bypass session identity validation. Public procedures resolve the actor from the registered session and use protected operation context for authorized service calls.
 
+### Temporal history and audit trail
+
+Migration 005 creates a mirrored history table for each of the 12 business tables and five durable reference/security metadata tables. Inserts open versions, real updates close and replace them, and deletes close versions while retaining their data and deletion attribution. No-op updates create no history. Every live record has one current history version; historical rows have no foreign keys back to deletable business records.
+
+Existing rows are initialized as observed snapshots with NULL historical start times and actors, rather than invented creation events. New events record database-owned UTC microsecond times, the actual session, verified person or explicit system-only maintenance attribution, and protected procedure context. History and business changes roll back together. Existing generic AuditLog records, successful operational event counts, rejection handling, and inventory reasons are retained.
+
+The manager audit role can read the denormalized view `vw_AuditTrail` or use the bounded keyset reader:
+
+```sql
+CALL sp_ListAuditTrail('Part', JSON_OBJECT('PartID', 1), NULL,
+                      NULL, NULL, NULL, 50);
+-- Next page: replace 123 with the smallest EventID returned above.
+CALL sp_ListAuditTrail('Part', JSON_OBJECT('PartID', 1), NULL,
+                      NULL, NULL, 123, 50);
+```
+
+Arguments are entity, JSON record key, responsible user, inclusive UTC start, exclusive UTC end, exclusive EventID cursor, and page size (1–200). NULL omits a filter. Results are ordered by EventID descending. The reader selects indexed event IDs before fetching version payloads; native roles receive no direct history-write permissions. No GUI or service is implemented. See [the temporal audit reference](docs/temporal-audit.md) for the complete object inventory, validity semantics, security boundaries, migration precautions, and remaining server-audit limitations.
+
 ### Adding a migration and recovering failures
 
-Keep the baseline SQL and successful migrations immutable. With migrations 001–004 already present, add `005_descriptive_change.sql` next and append `SOURCE migrations/005_descriptive_change.sql` to **the existing `sql/build.sql` manifest**. After 005, the next migration is 006. There is no separate migration manifest. Every SQL migration must be listed exactly once in numeric order; gaps, unlisted files, missing historical files, changed applied checksums, and downgrade targets are refused. Migration SQL uses the database selected by the runner; it must not switch databases or manage accounts. Restore `DELIMITER ;` at the end of routine definitions.
+Keep the baseline SQL and successful migrations immutable. With migrations 001–005 already present, add `006_descriptive_change.sql` next and append `SOURCE migrations/006_descriptive_change.sql` to **the existing `sql/build.sql` manifest**. After 006, the next migration is 007. There is no separate migration manifest. Every SQL migration must be listed exactly once in numeric order; gaps, unlisted files, missing historical files, changed applied checksums, and downgrade targets are refused. Migration SQL uses the database selected by the runner; it must not switch databases or manage accounts. Restore `DELIMITER ;` at the end of routine definitions.
 
 The runner holds a connection-level advisory lock throughout verification and migration, preventing two runners from upgrading the same database concurrently. Before executing each migration, it commits an `applying` history row. Only successful DDL and an atomic object-version/history update produce `applied`. SQL failure records `failed` when the server remains reachable; abrupt termination leaves `applying`. An empty history table indicates interruption during initial setup. All these incomplete states block further migrations and are never automatically replayed.
 
@@ -266,7 +288,7 @@ python3 -B -m unittest discover -s tests -v
 
 These tests require **no manual account provisioning or password entry**, including when launched from a terminal. They initialize their own temporary MySQL data directories, start private servers with networking disabled, provision their own admin/developer and restricted test accounts, and generate disposable credentials automatically. Root is used only for each private server's initial admin bootstrap and is then locked. The manual account-provisioning commands in step 2 still prompt normally.
 
-The tests connect only through their own temporary Unix sockets; they do not use `DEV_SOCKET`, connect to the installed project server, or require that server's credentials. `MYSQL_BIN` and `MYSQLD_BIN` may select the client/server executable paths. The private servers and their data are removed afterward. The suite currently contains 64 tests.
+The tests connect only through their own temporary Unix sockets; they do not use `DEV_SOCKET`, connect to the installed project server, or require that server's credentials. `MYSQL_BIN` and `MYSQLD_BIN` may select the client/server executable paths. The private servers and their data are removed afterward. The suite contains the existing 64 tests plus 20 temporal-history tests, including concurrent updates, rollback, history guards, pagination, and preservation of business/audit data during a version-4 upgrade.
 
 ## Verify the Build
 
@@ -287,7 +309,8 @@ Connect to the socket selected in step 2 with `/usr/local/mysql/bin/mysql --prot
 ```sql
 USE vehicle_service_maintenance;
 
--- Base tables (expect 21: 13 business + 2 versioning + 6 reference/identity tables)
+-- Base tables (expect 40: 12 business + generic AuditLog + 2 versioning
+-- + 6 reference/identity + 17 history + TemporalEvent + TemporalWriteContext)
 SHOW FULL TABLES WHERE Table_type = 'BASE TABLE';
 
 -- Views, procedures, and triggers

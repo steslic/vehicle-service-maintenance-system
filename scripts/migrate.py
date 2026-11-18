@@ -23,6 +23,21 @@ ROUTINE_GRANT_STEPS = {
         {"sp_CreateServiceAppointment": {"EXECUTE", "ALTER ROUTINE"},
          "sp_CompleteRepair": {"EXECUTE", "ALTER ROUTINE"}}),
 }
+AUDIT_READER_MIGRATION = "migrations/005_temporal_history.sql"
+
+
+def grant_audit_readers(admin, log, database):
+    # Only the existing manager role already scoped to this database. Never
+    # grant new rights to an unrelated server-wide role with the same name.
+    rows = admin.run("SELECT DISTINCT User, Host FROM mysql.tables_priv "
+                     f"WHERE Db = {literal(database)} AND User = 'role_manager' "
+                     "AND LOWER(Table_name) = 'auditlog';")
+    for row in rows.splitlines():
+        user, host = row.split('\t')
+        principal = f"{literal(user)}@{literal(host)}"
+        admin.run(f"GRANT SELECT ON `{database}`.vw_AuditTrail TO {principal}; "
+                  f"GRANT EXECUTE ON PROCEDURE `{database}`.sp_ListAuditTrail TO {principal};")
+        log.write(f"ADMIN audit reader grants: {database} {user}@{host}")
 
 
 @contextmanager
@@ -55,6 +70,8 @@ def routine_grant_authority(session, admin, log, database, routines):
 def apply_migration_sql(session, get_admin, log, database, filename, sql):
     if filename not in ROUTINE_GRANT_STEPS:
         session.run(sql)
+        if filename == AUDIT_READER_MIGRATION:
+            grant_audit_readers(get_admin(), log, database)
         return
     call, routines = ROUTINE_GRANT_STEPS[filename]
     if sql.count(call) != 1:
@@ -226,7 +243,8 @@ def run_migrations(session, command, env, log, database, inputs, migrations, sna
                                  "FROM schema_object_versions;")
         verify_objects(schema_fingerprints(session, database, get_admin, log),
                        dict(line.split("\t") for line in registered.splitlines()), "Deployed object")
-    if any(filename in ROUTINE_GRANT_STEPS for _, filename, _, _ in migrations[len(history):target]):
+    if any(filename in ROUTINE_GRANT_STEPS or filename == AUDIT_READER_MIGRATION
+           for _, filename, _, _ in migrations[len(history):target]):
         if get_admin is None:
             raise ValueError("These migrations require a separate administrative connection for routine grants")
         get_admin()  # Authenticate before starting an immutable DDL migration.

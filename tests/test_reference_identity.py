@@ -223,7 +223,8 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
         versions = "SELECT object_type, object_name, definition_checksum FROM `{}`.schema_object_versions ORDER BY object_type, object_name;"
         self.assertEqual(self.scalar(versions.format(legacy)), self.scalar(versions.format(self.database)))
         self.assertEqual(self.scalar(f"SELECT COUNT(*) FROM `{legacy}`.AuditLog WHERE SessionAccount IS NOT NULL;"), "0")
-        self.assertEqual(self.scalar(f"SELECT GROUP_CONCAT(version ORDER BY version) FROM `{legacy}`.schema_migrations;"), "1,2,3,4")
+        self.assertEqual(self.scalar(f"SELECT GROUP_CONCAT(version ORDER BY version) FROM `{legacy}`.schema_migrations;"),
+                         ','.join(str(v) for v in range(1, support.LATEST_VERSION + 1)))
 
     def test_role_policy_cannot_invalidate_referenced_profiles(self):
         result = self.sql(f"UPDATE `{self.database}`.UserRolePolicy SET RequiresTechnician = 0 WHERE RoleType = 'Technician';", check=False)
