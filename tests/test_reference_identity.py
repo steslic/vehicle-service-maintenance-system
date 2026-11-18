@@ -14,7 +14,7 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
         self.assert_success(self.build("--with-demo-accounts"))
 
     def remove_demo_accounts(self):
-        self.sql("DROP USER IF EXISTS 'sa_amy'@'localhost', 'tech_ben'@'localhost', 'mgr_mike'@'localhost', "
+        self.admin_sql("DROP USER IF EXISTS 'sa_amy'@'localhost', 'tech_ben'@'localhost', 'mgr_mike'@'localhost', "
                  "'svc_test'@'localhost', 'unknown_test'@'localhost'; "
                  "DROP ROLE IF EXISTS 'role_service_advisor', 'role_technician', 'role_manager', 'role_test_service';")
 
@@ -35,7 +35,7 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
         return result.stdout.strip()
 
     def service(self):
-        self.sql(f"""
+        self.admin_sql(f"""
             CREATE USER 'svc_test'@'localhost' IDENTIFIED BY 'Service#2026';
             CREATE ROLE 'role_test_service';
             GRANT EXECUTE ON PROCEDURE `{self.database}`.sp_CreateServiceAppointment TO 'role_test_service';
@@ -43,6 +43,8 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
             GRANT EXECUTE ON PROCEDURE `{self.database}`.sp_ListIndicatorValues TO 'role_test_service';
             GRANT 'role_test_service' TO 'svc_test'@'localhost';
             SET DEFAULT ROLE 'role_test_service' TO 'svc_test'@'localhost';
+        """)
+        self.sql(f"""
             INSERT INTO `{self.database}`.DatabasePrincipal (SessionAccount, PrincipalType, UserID)
             VALUES ('svc_test@localhost', 'Service', NULL);
             INSERT INTO `{self.database}`.PrincipalDelegation (SessionAccount, UserID, ProcedureName) VALUES
@@ -119,7 +121,7 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
                    "Acting user must be the logged-in user")
 
     def test_unmapped_login_and_invalid_responsible_actor_fail_closed(self):
-        self.sql(f"CREATE USER 'unknown_test'@'localhost' IDENTIFIED BY 'Unknown#2026'; "
+        self.admin_sql(f"CREATE USER 'unknown_test'@'localhost' IDENTIFIED BY 'Unknown#2026'; "
                  f"GRANT EXECUTE ON PROCEDURE `{self.database}`.sp_CreateServiceAppointment TO 'unknown_test'@'localhost';")
         self.actor("unknown_test", "SET @app_user_id = 1; CALL sp_CreateServiceAppointment(1, 5, 1, 2, CURDATE() + INTERVAL 130 DAY, 'Unknown', 60);",
                    "not a registered principal")
@@ -152,7 +154,7 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
                    "VALUES (CONNECTION_ID(), USER(), 1, 'sp_CompleteRepair', UUID());", "ERROR 1142")
         self.actor("svc_test", "CALL sp_ResolveActor(1, 'sp_CompleteRepair', @u);", "ERROR 1370")
         # Even an accidental direct grant cannot give a service an operation context.
-        self.sql(f"GRANT UPDATE ON `{self.database}`.ServiceAppointment TO 'svc_test'@'localhost'; "
+        self.admin_sql(f"GRANT UPDATE ON `{self.database}`.ServiceAppointment TO 'svc_test'@'localhost'; "
                  f"GRANT SELECT ON `{self.database}`.ServiceAppointment TO 'svc_test'@'localhost';")
         self.actor("svc_test", "SET @app_user_id = 2; UPDATE ServiceAppointment SET EstimatedDuration = 61 WHERE AppointmentID = 9;", "not authorized to act")
 

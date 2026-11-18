@@ -112,13 +112,15 @@ Existing public-procedure rejection recording remains available; direct SQL/priv
 ## Upgrade and verification
 
 ```bash
-python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p --admin-password \
     --database vsm_dev_example --migrate
 
 python3 -B -m unittest discover -s tests -v
 ```
 
-All automated tests start private MySQL servers with networking disabled. They exercise old build regressions, domain membership, live INSERT-driven dropdowns, human/service identity, native role gates, forged variables, provenance fields, database clocks, transactional rollback, and preservation of all original business columns. Fresh and upgraded schemas are compared using deployed object fingerprints. The baseline SQL acceptance suite remains unchanged and runs before upgrades; the new regression suite exercises the latest schema after upgrades.
+All automated tests start private MySQL servers with networking disabled. Root is used only to provision `vsm_admin` during startup and is then locked. Builds, migrations, SQL assertions, and data fixtures use `vsm_developer`; account/privilege changes use `vsm_admin`. See [account responsibilities and required privileges](build-accounts.md). These physical setup accounts have no operational person-identity fallback.
+
+The tests exercise old build regressions, domain membership, live INSERT-driven dropdowns, human/service identity, native role gates, forged variables, provenance fields, database clocks, transactional rollback, and preservation of all original business columns. Fresh and upgraded schemas are compared using deployed object fingerprints. The baseline SQL acceptance suite remains unchanged and runs before upgrades; the new regression suite exercises the latest schema after upgrades.
 
 ## Remaining workflow work
 

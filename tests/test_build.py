@@ -44,6 +44,7 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
 
     def test_reset_rejects_non_development_database(self):
         protected = "vsm_keep_" + uuid.uuid4().hex[:12]
+        self.grant_database(protected)
         self.addCleanup(lambda: self.sql(f"DROP DATABASE `{protected}`;"))
         self.sql(f"CREATE DATABASE `{protected}`; CREATE TABLE `{protected}`.Sentinel (ID INT); "
                  f"INSERT INTO `{protected}`.Sentinel VALUES (42);")
@@ -116,11 +117,16 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
 
 
     def test_demo_principals_are_untouched_and_opt_in_refuses_collisions(self):
-        self.sql("CREATE ROLE 'role_service_advisor'; "
+        self.admin_sql("CREATE ROLE 'role_service_advisor'; "
                  "CREATE USER 'sa_amy'@'localhost' IDENTIFIED BY 'Unrelated-test-only';")
-        self.addCleanup(lambda: self.sql("DROP USER 'sa_amy'@'localhost'; DROP ROLE 'role_service_advisor';"))
-        before = self.scalar("SHOW GRANTS FOR 'role_service_advisor'; SHOW GRANTS FOR 'sa_amy'@'localhost'; "
-                             "SELECT authentication_string FROM mysql.user WHERE User = 'sa_amy';")
+        self.addCleanup(lambda: self.admin_sql("DROP USER 'sa_amy'@'localhost'; DROP ROLE 'role_service_advisor';"))
+        metadata = ("SELECT User, Host FROM mysql.user WHERE User IN ('role_service_advisor', 'sa_amy'); "
+                    "SELECT User, Host, Db, Table_name FROM mysql.tables_priv "
+                    "WHERE User IN ('role_service_advisor', 'sa_amy'); "
+                    "SELECT User, Host, Db, Routine_name, Proc_priv FROM mysql.procs_priv "
+                    "WHERE User IN ('role_service_advisor', 'sa_amy');")
+        before = self.admin_scalar(metadata)
+        self.account_sql("sa_amy", "Unrelated-test-only", "SELECT 1;")
         normal = self.build()
         self.assert_success(normal)
         self.assertIn("SKIP", normal.stdout)
@@ -128,16 +134,16 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
         result = self.build("--dev-reset", "--with-demo-accounts")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("existing users/roles would collide", result.stderr)
-        after = self.scalar("SHOW GRANTS FOR 'role_service_advisor'; SHOW GRANTS FOR 'sa_amy'@'localhost'; "
-                            "SELECT authentication_string FROM mysql.user WHERE User = 'sa_amy';")
+        after = self.admin_scalar(metadata)
+        self.account_sql("sa_amy", "Unrelated-test-only", "SELECT 1;")
         self.assertEqual(after, before)
         self.assertEqual(self.snapshot(), data_before)
-        self.assertEqual(self.scalar("SELECT COUNT(*) FROM mysql.user WHERE User IN "
+        self.assertEqual(self.admin_scalar("SELECT COUNT(*) FROM mysql.user WHERE User IN "
                                     "('role_technician', 'role_manager', 'tech_ben', 'mgr_mike');"), "0")
 
 
     def test_full_existing_suite_with_optional_demo_provisioning(self):
-        self.addCleanup(lambda: self.sql("DROP USER IF EXISTS 'sa_amy'@'localhost', 'tech_ben'@'localhost', 'mgr_mike'@'localhost'; "
+        self.addCleanup(lambda: self.admin_sql("DROP USER IF EXISTS 'sa_amy'@'localhost', 'tech_ben'@'localhost', 'mgr_mike'@'localhost'; "
                                         "DROP ROLE IF EXISTS 'role_service_advisor', 'role_technician', 'role_manager';"))
         result = self.build("--with-demo-accounts")
         self.assert_success(result)
@@ -307,7 +313,7 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
         self.assert_success(self.build())
         before = self.snapshot()
         self.add_migration(f"{NEXT_VERSION:03d}_interruption.sql", "CREATE INDEX idx_Interrupted ON Customer (Phone);\nSELECT SLEEP(15);\n")
-        process = subprocess.Popen(self.build_command("--migrate"), text=True,
+        process = subprocess.Popen(self.build_command("--migrate"), env=self.build_env(), text=True,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         connection = None
         try:
@@ -359,7 +365,7 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
         self.assert_success(self.build())
         name = f"migrations/{NEXT_VERSION:03d}_lock_test.sql"
         self.add_migration(f"{NEXT_VERSION:03d}_lock_test.sql", "CREATE INDEX idx_LockTest ON Customer (Phone);\nSELECT SLEEP(15);\n")
-        process = subprocess.Popen(self.build_command("--migrate"), text=True,
+        process = subprocess.Popen(self.build_command("--migrate"), env=self.build_env(), text=True,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             for _ in range(100):
@@ -382,8 +388,8 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
 
     def test_preflight_rejects_unsafe_server_defaults_before_ddl(self):
         old = self.scalar("SELECT @@global.sql_mode;")
-        self.addCleanup(lambda: self.sql("SET GLOBAL sql_mode = '" + old + "';"))
-        self.sql("SET GLOBAL sql_mode = 'NO_ENGINE_SUBSTITUTION';")
+        self.addCleanup(lambda: self.admin_sql("SET GLOBAL sql_mode = '" + old + "';"))
+        self.admin_sql("SET GLOBAL sql_mode = 'NO_ENGINE_SUBSTITUTION';")
         result = self.build()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Required SQL modes", result.stderr)
@@ -392,8 +398,8 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
 
     def test_compatible_sql_mode_defaults_create_reproducible_objects(self):
         old = self.scalar("SELECT @@global.sql_mode;")
-        self.addCleanup(lambda: self.sql("SET GLOBAL sql_mode = '" + old + "';"))
-        self.sql("SET GLOBAL sql_mode = 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION';")
+        self.addCleanup(lambda: self.admin_sql("SET GLOBAL sql_mode = '" + old + "';"))
+        self.admin_sql("SET GLOBAL sql_mode = 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION';")
         result = self.build()
         self.assert_success(result)
         self.assertIn("SESSION SETTINGS: sql_mode=ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES", result.stdout)
@@ -401,8 +407,8 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
 
     def test_preflight_rejects_non_durable_checkpoints_before_ddl(self):
         old = self.scalar("SELECT @@global.innodb_flush_log_at_trx_commit;")
-        self.addCleanup(lambda: self.sql("SET GLOBAL innodb_flush_log_at_trx_commit = " + old + ";"))
-        self.sql("SET GLOBAL innodb_flush_log_at_trx_commit = 2;")
+        self.addCleanup(lambda: self.admin_sql("SET GLOBAL innodb_flush_log_at_trx_commit = " + old + ";"))
+        self.admin_sql("SET GLOBAL innodb_flush_log_at_trx_commit = 2;")
         result = self.build()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Durable migration checkpoints", result.stderr)

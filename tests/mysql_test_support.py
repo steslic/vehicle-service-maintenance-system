@@ -16,6 +16,9 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import accounts
+
 LATEST_VERSION = max(int(p.name[:3]) for p in (ROOT / "sql" / "migrations").glob("[0-9][0-9][0-9]_*.sql"))
 NEXT_VERSION = LATEST_VERSION + 1
 BUSINESS_TABLES = ("customer", "vehicle", "technician", "part", "useraccount", "serviceappointment",
@@ -32,6 +35,8 @@ def executable(env_name, name):
 
 
 class DisposableMySQLTestCase(unittest.TestCase):
+    binary_logging = False
+    legacy_routine_inspection = False
     @classmethod
     def setUpClass(cls):
         cls.mysql = executable("MYSQL_BIN", "mysql")
@@ -40,6 +45,9 @@ class DisposableMySQLTestCase(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.server_dir = Path(cls.temp.name)
         cls.socket = str(cls.server_dir / "mysql.sock")
+        cls.developer_password = uuid.uuid4().hex
+        cls.admin_password = uuid.uuid4().hex
+        cls.authorized_databases = set()
         datadir = cls.server_dir / "data"
         datadir.mkdir()
         init = subprocess.run(
@@ -53,7 +61,8 @@ class DisposableMySQLTestCase(unittest.TestCase):
         cls.server = subprocess.Popen(
             [cls.mysqld, "--no-defaults", f"--datadir={datadir}", f"--socket={cls.socket}",
              f"--pid-file={cls.server_dir / 'mysql.pid'}", "--skip-networking", "--mysqlx=OFF",
-             "--innodb-buffer-pool-size=64M"],
+             "--innodb-buffer-pool-size=64M",
+             f"--log-bin={cls.server_dir / 'binlog'}" if cls.binary_logging else "--skip-log-bin"],
             stdout=log, stderr=subprocess.STDOUT,
         )
 
@@ -72,27 +81,59 @@ class DisposableMySQLTestCase(unittest.TestCase):
                 log.seek(0)
                 raise RuntimeError("Disposable MySQL exited:\n" + log.read())
             if Path(cls.socket).exists():
-                probe = cls.sql("SELECT 1;", check=False)
+                # The only root connection: provision the administrator on this
+                # newly initialized private server, then lock root immediately.
+                probe = subprocess.run(
+                    [cls.mysql, "--no-defaults", "--protocol=SOCKET", f"--socket={cls.socket}",
+                     "--user=root", "--batch", "--skip-force"],
+                    input=accounts.bootstrap_admin(cls.admin_password, test_namespace=True, lock_root=True,
+                                                   legacy_routine_inspection=cls.legacy_routine_inspection),
+                    env={key: value for key, value in os.environ.items() if key != "MYSQL_PWD"},
+                    text=True, capture_output=True, timeout=30)
                 if probe.returncode == 0:
+                    cls.admin_sql(accounts.create_developer(cls.developer_password))
                     return
+                if "ERROR 2002" not in probe.stderr:
+                    raise RuntimeError("Private account bootstrap failed:\n" + probe.stderr)
             time.sleep(0.1)
         raise RuntimeError("Disposable MySQL did not become ready")
 
 
     @classmethod
     def sql(cls, statement, check=True):
+        return cls.account_sql("vsm_developer", cls.developer_password, statement, check)
+
+    @classmethod
+    def admin_sql(cls, statement, check=True):
+        return cls.account_sql("vsm_admin", cls.admin_password, statement, check)
+
+    @classmethod
+    def account_sql(cls, user, password, statement, check=True):
+        if user == "root":
+            raise ValueError("Root is allowed only in private-server bootstrap")
+        env = os.environ.copy()
+        env["MYSQL_PWD"] = password
         result = subprocess.run(
             [cls.mysql, "--no-defaults", "--protocol=SOCKET", f"--socket={cls.socket}",
-             "--user=root", "--batch", "--raw", "--skip-column-names", "--skip-force"],
-            input=statement, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
+             f"--user={user}", "--batch", "--raw", "--skip-column-names", "--skip-force"],
+            env=env, input=statement, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
         )
         if check and result.returncode:
             raise AssertionError(result.stderr)
         return result
 
+    @classmethod
+    def grant_database(cls, database):
+        if not database.startswith("vsm_"):
+            raise ValueError("Tests may authorize only private vsm_* databases")
+        if database not in cls.authorized_databases:
+            cls.admin_sql(accounts.grant_developer_schema(database))
+            cls.authorized_databases.add(database)
+
 
     def setUp(self):
         self.database = "vsm_dev_" + uuid.uuid4().hex[:12]
+        self.grant_database(self.database)
         self.fixture = self.server_dir / ("fixture_" + uuid.uuid4().hex[:8])
         shutil.copytree(ROOT / "sql", self.fixture / "sql")
         shutil.copytree(ROOT / "scripts", self.fixture / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
@@ -110,14 +151,21 @@ class DisposableMySQLTestCase(unittest.TestCase):
 
 
     def build_command(self, *options, database=None, root=None):
+        self.grant_database(database or self.database)
         return [sys.executable, "-B", str((root or self.fixture) / "scripts" / "build.py"),
                 "--mysql", self.mysql, "--socket", self.socket,
                 "--database", database or self.database, *options]
 
+    def build_env(self):
+        env = os.environ.copy()
+        env["MYSQL_PWD"] = self.developer_password
+        env["VSM_ADMIN_PASSWORD"] = self.admin_password
+        return env
+
 
     def build(self, *options, database=None, root=None, cwd=None):
         return subprocess.run(self.build_command(*options, database=database, root=root),
-                              cwd=cwd, text=True, stdout=subprocess.PIPE,
+                              env=self.build_env(), cwd=cwd, text=True, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, timeout=60)
 
 
@@ -128,6 +176,9 @@ class DisposableMySQLTestCase(unittest.TestCase):
 
     def scalar(self, statement):
         return self.sql(statement).stdout.strip()
+
+    def admin_scalar(self, statement):
+        return self.admin_sql(statement).stdout.strip()
 
 
     def database_exists(self, database=None):

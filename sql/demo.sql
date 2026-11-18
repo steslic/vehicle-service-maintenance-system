@@ -1,20 +1,20 @@
 -- =====================================================================
 -- Vehicle Service and Maintenance Management System
 -- demo.sql : live demonstration script
--- Historical version-2 demo: root asserts human identities in these examples.
+-- Historical version-2 demo: the setup account asserts human identities in these examples.
 -- Use --target-version 2 on a private disposable server to reproduce it.
 -- Current registered-person/service examples: docs/reference-and-identity.md.
 --
 -- One example for every item in "Required Final Demonstration":
---   1. Fresh build and data initialization          (root terminal)
---   2. Core business workflow                       (root terminal)
---   3. Common queries and performance evidence      (root terminal)
+--   1. Fresh build and data initialization          (vsm_developer terminal)
+--   2. Core business workflow                       (vsm_developer terminal)
+--   3. Common queries and performance evidence      (vsm_developer terminal)
 --   4. Entitlement demonstration                    (sa_amy / tech_ben / mgr_mike terminals)
---   5. Audit and traceability                       (root terminal)
---   6. Resiliency                                   (root terminal)
+--   5. Audit and traceability                       (vsm_developer terminal)
+--   6. Resiliency                                   (vsm_developer terminal)
 --
 --   Terminals (from the repository root):
---     root     : /usr/local/mysql/bin/mysql -u root -p vehicle_service_maintenance
+--     developer: /usr/local/mysql/bin/mysql -u vsm_developer -p vehicle_service_maintenance
 --     sa_amy   : /usr/local/mysql/bin/mysql -u sa_amy   -p vehicle_service_maintenance   (Advisor#2026)
 --     tech_ben : /usr/local/mysql/bin/mysql -u tech_ben -p vehicle_service_maintenance   (Tech#2026)
 --     mgr_mike : /usr/local/mysql/bin/mysql -u mgr_mike -p vehicle_service_maintenance   (Manager#2026)
@@ -30,12 +30,12 @@
 -- 1.1 In shell (documented README process):
 --   git clone https://github.com/steslic/vehicle-service-maintenance-system.git
 --   cd vehicle-service-maintenance-system/sql
---   python3 ../scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p --with-demo-accounts --target-version 2
+--   python3 ../scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p --with-demo-accounts --admin-password --target-version 2
 
 -- Tests already run during the build and change sample data; use a fresh database for a new run.
 -- Point 06 load summary and the final PASS count (no FAIL rows)
 
--- 1.2 Verification (root terminal)
+-- 1.2 Verification (vsm_developer terminal)
 USE vehicle_service_maintenance;
 
 -- Objects created: tables, views, procedures, triggers, indexes, constraints
@@ -61,10 +61,7 @@ GROUP BY TABLE_NAME, INDEX_NAME
 ORDER BY TABLE_NAME, INDEX_NAME;
 
 -- Roles and the demo users that hold them
-SELECT FROM_USER AS RoleName, TO_USER AS GrantedToUser
-FROM mysql.role_edges
-WHERE FROM_USER LIKE 'role\_%'
-ORDER BY FROM_USER;
+-- Use the named-user SHOW GRANTS statements in Section 4 below.
 
 -- Row counts (sample data loaded)
 SELECT 'Customer' AS TableName, COUNT(*) AS RowCount FROM Customer
@@ -83,7 +80,7 @@ UNION ALL SELECT 'AuditLog',           COUNT(*) FROM AuditLog;
 
 
 -- =====================================================================
--- SECTION 2. CORE BUSINESS WORKFLOW (root terminal)
+-- SECTION 2. CORE BUSINESS WORKFLOW (vsm_developer terminal)
 -- New customer -> book -> check in -> repair -> complete with parts
 -- -> close the appointment
 -- =====================================================================
@@ -182,7 +179,7 @@ WHERE sa.AppointmentID = @appt;
 
 
 -- =====================================================================
--- SECTION 3. COMMON QUERIES AND PERFORMANCE (root terminal)
+-- SECTION 3. COMMON QUERIES AND PERFORMANCE (vsm_developer terminal)
 -- For each plan: tables joined, predicate, index chosen, rows read,
 -- and lookup / range scan / full scan / sort.
 -- =====================================================================
@@ -269,19 +266,22 @@ WHERE QuantityOnHand < MinimumInventoryLevel
 ORDER BY QuantityOnHand\G
 
 -- END of the demo, from shell: 
---   /usr/local/mysql/bin/mysql -u root -p < docs/performance/perf_data.sql
---   /usr/local/mysql/bin/mysql -t -u root -p < docs/performance/OPT-01_common_repairs_covering_index.sql
+--   /usr/local/mysql/bin/mysql -u vsm_developer -p < docs/performance/perf_data.sql
+--   /usr/local/mysql/bin/mysql -t -u vsm_developer -p < docs/performance/OPT-01_common_repairs_covering_index.sql
 
 
 -- =====================================================================
 -- SECTION 4. ENTITLEMENTS (real role logins)
 -- =====================================================================
 
--- 4.1 [root] What a technician is granted
-SHOW GRANTS FOR 'tech_ben'@'localhost' USING 'role_technician';
+-- 4.1 Each named user runs the corresponding statement in their own terminal
+-- [tech_ben]
+SHOW GRANTS FOR CURRENT_USER USING 'role_technician';
 
-SHOW GRANTS FOR 'sa_amy'@'localhost'   USING 'role_service_advisor';
-SHOW GRANTS FOR 'mgr_mike'@'localhost' USING 'role_manager';
+-- [sa_amy]
+SHOW GRANTS FOR CURRENT_USER USING 'role_service_advisor';
+-- [mgr_mike]
+SHOW GRANTS FOR CURRENT_USER USING 'role_manager';
 
 -- 4.2 Same action, authorized vs unauthorized role (SEC-01)
 -- [sa_amy] ALLOWED: the advisor extends appointment 9 to 90 minutes
@@ -345,10 +345,10 @@ SELECT EstimateID, Status, ApprovedByUserID, ApprovalDateTime FROM RepairEstimat
 
 
 -- =====================================================================
--- SECTION 5. AUDIT AND TRACEABILITY (root terminal, same session as Section 2)
+-- SECTION 5. AUDIT AND TRACEABILITY (vsm_developer terminal, same session as Section 2)
 -- =====================================================================
 
--- Only if the root terminal was reconnected since Section 2, restore the IDs:
+-- Only if the vsm_developer terminal was reconnected since Section 2, restore the IDs:
 -- SET @appt   = (SELECT sa.AppointmentID FROM ServiceAppointment sa JOIN Vehicle v ON v.VehicleID = sa.VehicleID
 --                WHERE v.VIN = '5YJ3E1EA7PF123456' AND sa.AppointmentDateTime = '2026-12-02 09:00:00');
 -- SET @repair = (SELECT RepairID FROM Repair WHERE AppointmentID = @appt);
@@ -377,7 +377,7 @@ SELECT a.AuditLogID, u.Username AS Actor, a.Action, a.PreviousValue, a.NewValue
 FROM AuditLog a JOIN UserAccount u ON u.UserID = a.UserID
 WHERE a.AffectedEntity = 'RepairEstimate' AND a.AffectedRecordID = 3 AND a.Action = 'Approve';
 
--- 5.3 Audit records cannot be altered or deleted, even by root
+-- 5.3 Audit records cannot be altered or deleted, even by the developer
 -- EXPECTED: ERROR "Audit records cannot be modified"
 UPDATE AuditLog SET Action = 'Tampered' WHERE AuditLogID = 1;
 
@@ -395,7 +395,7 @@ UPDATE ServiceAppointment SET EstimatedDuration = 30 WHERE AppointmentID = @appt
 
 
 -- =====================================================================
--- SECTION 6. RESILIENCY (root terminal)
+-- SECTION 6. RESILIENCY (vsm_developer terminal)
 -- =====================================================================
 
 -- 6.1 Setup: Carla's appointment 8 is checked in and her repair 8 started

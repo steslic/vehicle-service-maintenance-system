@@ -6,7 +6,7 @@
 -- data distribution as perf_data.sql (8 repair types, half Completed).
 -- The project database is not touched. Takes a few minutes at 5M rows.
 --
--- Run:  mysql -u root -p -t < OPT-01_scale_test.sql > OPT-01_scale_output.txt
+-- Run:  mysql -u vsm_developer -p -t < OPT-01_scale_test.sql > OPT-01_scale_output.txt
 -- Read: the "actual time=...." on the first line of each EXPLAIN ANALYZE
 --       (the second number is the total time in ms).
 

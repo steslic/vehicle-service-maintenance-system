@@ -11,6 +11,7 @@ README.md                  This file
 docs/
   tdd.md                   Technical Design Document
   FRD.md                   Functional Requirements Document
+  build-accounts.md        Detailed account privileges and provisioning reference
   vehicle-service-erd.drawio  Data model / ER diagram (draw.io)
   vehicle-service-erd.svg  Data model / ER diagram (svg)
   erd.md                   ER diagram explanation
@@ -28,9 +29,11 @@ sql/
 scripts/build.py           Safe, fail-fast build runner
 scripts/database.py        MySQL session, preflight checks, and timestamped logging
 scripts/migrate.py         Ordered migration and schema verification helpers
+scripts/accounts.py        Explicit bootstrap and administrator account provisioning
 sql/09_schema_migrations.sql  Migration history table
 sql/migrations/            Baseline and ordered upgrades through reference/identity metadata
 tests/test_build.py        Build and migration regression tests
+tests/test_build_accounts.py  Developer/admin separation and denied-operation tests
 tests/test_reference_identity.py  Reference, actor, and provenance regressions
 tests/mysql_test_support.py  Shared private disposable MySQL server harness
 ```
@@ -44,7 +47,7 @@ tests/mysql_test_support.py  Shared private disposable MySQL server harness
 | Python                    | 3.9 or later, for the build runner and build regression tests.                                |
 | Git                       | Any recent version                                                                              |
 | Platform                  | Developed and tested on macOS. Any OS that runs MySQL 8 works.                                  |
-| Account                   | A MySQL account with privileges to create databases, users, and roles (for example, `root`).    |
+| Accounts                  | Schema-scoped `vsm_developer` for builds/migrations; separate `vsm_admin` for provisioning and temporary routine permissions. See [account setup](docs/build-accounts.md). |
 
 MySQL Workbench is optional and is only used for viewing results.
 
@@ -62,15 +65,75 @@ git rev-parse HEAD
 git status --porcelain  # must be empty for clean-clone evidence
 ```
 
-### 2. Build the database, load the data, and run the tests
+### 2. Select the server and provision setup accounts
+
+The MySQL server must already be running. Select its Unix socket using the path in that instance's `--socket` startup option or server configuration. For development, use a private, disposable server with its own data directory and socket; do not select the installed project server accidentally. Replace the path below with the intended server's actual absolute socket path, choose the schema name, and keep these variables in the same terminal for the following commands:
 
 ```bash
-python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p
+DEV_SOCKET=/absolute/path/to/intended/mysql.sock
+VSM_DATABASE=vehicle_service_maintenance
 ```
+
+The examples use `/usr/local/mysql/bin/mysql`; substitute your installed client path if different. See [build-accounts.md](docs/build-accounts.md) for private-server settings, exact privileges, and legacy-definer administrative exceptions. If you only want to run automated regression tests, skip manual account provisioning and follow [Build regression tests](#build-regression-tests).
+
+First, authenticate as the selected server's existing root account to create `vsm_admin` and authorize it for the intended schema:
+
+```bash
+python3 scripts/accounts.py --mysql /usr/local/mysql/bin/mysql \
+    --socket "$DEV_SOCKET" --database "$VSM_DATABASE" --bootstrap-admin
+```
+
+At `root connection password:`, enter the **existing root password for that server**. For a freshly initialized disposable server configured with an empty root password, press Enter at this prompt. At `New vsm_admin password:`, **choose a new password for the new administrative account** and retain it for later steps. This command does not change the root password or create the business database. Root is used only for this initial administrative provisioning.
+
+Next, authenticate as the newly created administrator to create `vsm_developer` and grant its schema permissions:
+
+```bash
+python3 scripts/accounts.py --mysql /usr/local/mysql/bin/mysql \
+    --socket "$DEV_SOCKET" --database "$VSM_DATABASE" --create-developer
+```
+
+At `vsm_admin connection password:`, enter the **admin password created in the preceding command**. At `New vsm_developer password:`, **choose a new, separate developer password** and retain it for builds and migrations.
+
+Account creation is required **once per MySQL server**, not for each clone, build, or migration. On an already provisioned server, use the existing credentials and skip both account-creation commands; existing account names are refused rather than overwritten. Additional schemas need additional authorization. The admin must have authority for each exact schema: include all known intended schemas with repeated `--database` options during initial admin bootstrap, or have the server owner approve an additional scope before granting it to the developer. Then authorize the existing developer without a creation flag:
+
+```bash
+# Later, only after vsm_admin has authority for this additional schema:
+ADDITIONAL_DATABASE=vsm_dev_upgrade
+python3 scripts/accounts.py --mysql /usr/local/mysql/bin/mysql \
+    --socket "$DEV_SOCKET" --database "$ADDITIONAL_DATABASE"
+```
+
+This later command asks only for the **existing admin password**; it creates no account or password. The optional reset, demo, and upgrade examples below likewise require authorization for their named schemas.
+
+### 3. Build the database, load the data, and run the tests
+
+```bash
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql \
+    --socket "$DEV_SOCKET" --database "$VSM_DATABASE" \
+    -u vsm_developer -p --admin-user vsm_admin --admin-password
+```
+
+At `MySQL password:`, enter the **existing developer password from step 2**. If administrative work is required, `Administrative MySQL password:` asks for the **existing admin password from step 2**. The standard command above creates no account passwords; optional demo-account creation is a separate opt-in below. The developer performs schema/data/test operations; the separate admin connection performs optional demo provisioning and temporary routine grants required by migrations 003 and 004. The build defaults to these two account names, refuses root, and never falls back to another account.
 
 Run the command with the absolute path to `scripts/build.py` if your shell is in another directory. SQL paths, Git metadata, and the default log directory are resolved relative to the checkout, not the shell directory.
 
-The runner refuses an existing `vehicle_service_maintenance` database and leaves its business data and audit history unchanged. It validates every manifest input and migration checksum before executing SQL, then runs the existing schema/data/test batch with continue-on-error disabled. Verified migrations follow on the same connection. Missing files, SQL errors, and failed test suites produce a nonzero exit code. A failed build retains its partial database for inspection; it is never silently deleted or reused.
+The runner refuses an existing database with the selected name and leaves its business data and audit history unchanged. It validates every manifest input and migration checksum before executing SQL, then runs the existing schema/data/test batch with continue-on-error disabled. Verified migrations follow on the same connection. Missing files, SQL errors, and failed test suites produce a nonzero exit code. A failed build retains its partial database for inspection; it is never silently deleted or reused.
+
+Schema creation, sample data, SQL assertions, migrations, and failure-history updates use the developer session. The optional `08_demo_accounts.sql` file alone uses the admin session, while retaining its position in the same manifest. Build logs identify both authenticated accounts and the temporary routine-authority grants and cleanup. Previously applied migration files and checksums are unchanged.
+
+### 4. Apply later migrations to an existing database
+
+When new numbered migrations are available, upgrade the same selected schema instead of building it again:
+
+```bash
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql \
+    --socket "$DEV_SOCKET" --database "$VSM_DATABASE" --migrate \
+    -u vsm_developer -p --admin-user vsm_admin --admin-password
+```
+
+Enter the **existing developer password**, then the **existing admin password if prompted**. Migration does not create accounts or passwords and never reloads sample data or runs data-changing SQL acceptance tests. A fresh build already applies all migrations through version 004; running this command immediately afterward verifies the schema and makes no changes. Baseline builds through version 002 without demo accounts and already-current migrations with developer-owned routines need no admin connection, so the admin prompt is not shown. Legacy-definer metadata inspection may require the admin as explained in [the technical reference](docs/build-accounts.md).
+
+### Build manifest
 
 `sql/build.sql` lists the files in execution order:
 
@@ -96,6 +159,8 @@ Use the runner instead of piping `build.sql` or concatenating SQL files into the
 
 Before database creation, reset, or migration, the runner checks the client/server versions and requires InnoDB, `REPEATABLE-READ`, autocommit, foreign-key checks, unique checks, a writable server, and `innodb_flush_log_at_trx_commit = 1` for durable migration checkpoints. SQL mode must include `STRICT_TRANS_TABLES` and `NO_ENGINE_SUBSTITUTION`, with `ANSI_QUOTES` and `NO_BACKSLASH_ESCAPES` disabled. After these checks, it pins the session SQL mode to `ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION`, so stored-object definitions are reproducible. The connection uses `utf8mb4`; new databases use `utf8mb4_0900_ai_ci`; operation timestamps use a UTC session. Existing databases are checked against their recorded object definitions.
 
+When binary logging is enabled, routine/trigger creation also requires administrator-approved `log_bin_trust_function_creators=ON`. The runner refuses an incompatible configuration before DDL; it never requests SUPER or changes server globals itself. Private regression servers normally disable binary logging; a separate test verifies the enabled case.
+
 Every run writes `logs/<UTC timestamp>-<process ID>-build.log`, including refusals and SQL/test failures. The log records the source Git SHA, dirty-worktree flag, MySQL client/server/settings, executed SQL filenames and checksums, existing test results, migration operations, schema version, and final `SUCCESS`, `FAILED`, or `INTERRUPTED` status. An abrupt process/server death can leave no final status; the durable migration history then identifies unfinished work. Passwords are not placed in commands or logs.
 
 `--log-dir /absolute/path` selects another log directory. Logs are ignored by Git by default; retain a chosen clean-clone run as submission evidence. A dirty-worktree log identifies the base commit but does not claim the uncommitted changes are reproducible from that SHA. No release tag or commit is created by the runner.
@@ -105,8 +170,8 @@ Every run writes `logs/<UTC timestamp>-<process ID>-build.log`, including refusa
 Only disposable databases whose names begin with `vsm_dev_` can be reset:
 
 ```bash
-python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
-    --database vsm_dev_local --dev-reset
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p --admin-password \
+    --socket "$DEV_SOCKET" --database vsm_dev_local --dev-reset
 ```
 
 `--dev-reset` deletes all business and audit data in that named development database. It is refused for `vehicle_service_maintenance` and every other non-development name. Without the flag, even an existing `vsm_dev_*` database is protected. Database resets never reset users or roles.
@@ -116,8 +181,8 @@ python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
 Server-wide demo roles and accounts are excluded by default. To provision them on a disposable server where those names are unused:
 
 ```bash
-python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
-    --database vsm_dev_demo --with-demo-accounts
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p --admin-password \
+    --socket "$DEV_SOCKET" --database vsm_dev_demo --with-demo-accounts
 ```
 
 Provisioning refuses any existing demo username or role before creating or resetting a database. It never drops accounts, changes existing passwords, or adds grants to existing principals. Repeating a demo build on the same server therefore requires separately managing its demo principals or using a fresh disposable server.
@@ -132,25 +197,25 @@ To demonstrate an upgrade on a new disposable database:
 
 ```bash
 # Build the current baseline (version 1), including the existing database tests.
-python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
-    --database vsm_dev_upgrade --target-version 1
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p --admin-password \
+    --socket "$DEV_SOCKET" --database vsm_dev_upgrade --target-version 1
 
 # Upgrade to the latest version (currently 4).
-python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
-    --database vsm_dev_upgrade --migrate
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p --admin-password \
+    --socket "$DEV_SOCKET" --database vsm_dev_upgrade --migrate
 
 # Repeat: no migration SQL executes again and application timestamps stay unchanged.
-python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
-    --database vsm_dev_upgrade --migrate
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p --admin-password \
+    --socket "$DEV_SOCKET" --database vsm_dev_upgrade --migrate
 ```
 
-A normal new build without `--target-version` finishes at the latest manifest version (currently 4). Versions 1 and 2 remain immutable. Later migrations add reference/identity metadata and replace the affected procedures and guards while retaining existing business rows and lifecycle transitions. See [Reference values, identity, and provenance](docs/reference-and-identity.md) for the domain inventory, delegation setup, and remaining workflow work.
+A normal new build without `--target-version` finishes at the latest manifest version (currently 004). Migrations 001 through 004 remain immutable; the next new migration is 005. Migrations 003 and 004 add reference/identity metadata and replace the affected procedures and guards while retaining existing business rows and lifecycle transitions. See [Reference values, identity, and provenance](docs/reference-and-identity.md) for the domain inventory, delegation setup, and remaining workflow work.
 
 For an **unversioned existing database**, first stop application writes and take a backup. Explicitly request adoption:
 
 ```bash
-python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
-    --database YOUR_EXISTING_DATABASE --migrate --baseline
+python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p --admin-password \
+    --socket "$DEV_SOCKET" --database "$VSM_DATABASE" --migrate --baseline
 ```
 
 This compares every business table definition (columns, keys, indexes, checks, engine, collation), view, procedure signature/body/settings, and trigger against `sql/migrations/baseline.json`. Data and AUTO_INCREMENT counters are excluded, and creator/definer account names can vary. Any missing, extra, or changed object prevents registration before any metadata DDL. Existing metadata without a valid history is also refused. The snapshot is bound by a SHA-256 digest in the baseline migration; the history-table DDL is bound the same way. Do not regenerate the snapshot to bypass a mismatch: investigate the schema difference. `--target-version 1` can register a verified baseline without applying later upgrades.
@@ -181,9 +246,11 @@ CALL sp_ListIndicatorValues('repair_type');
 
 Registered people are resolved from the full database session login. A caller-supplied person ID can only assert that identity; service calls need explicit person/operation delegations, and the service should have EXECUTE only. An unmapped administrative connection is no longer an operational acting-user fallback. Audit rows record the session account separately from the responsible person; old session identities remain unknown. Follow the [identity and reference guide](docs/reference-and-identity.md) for direct-user, service-account, and provenance details.
 
+After migration 004, `@app_user_id` is a checked compatibility hint, **not a trusted identity source**. Setting it cannot authenticate a person, impersonate another user, authorize a service delegation, or bypass session identity validation. Public procedures resolve the actor from the registered session and use protected operation context for authorized service calls.
+
 ### Adding a migration and recovering failures
 
-Keep the baseline SQL and successful migrations immutable. Add the next contiguous numbered SQL file (for example, `003_descriptive_change.sql`) and append its `SOURCE migrations/...` entry to **the existing `sql/build.sql` manifest**. There is no separate migration manifest. Every SQL migration must be listed exactly once in numeric order; gaps, unlisted files, missing historical files, changed applied checksums, and downgrade targets are refused. Migration SQL uses the database selected by the runner; it must not switch databases or manage accounts. Restore `DELIMITER ;` at the end of routine definitions.
+Keep the baseline SQL and successful migrations immutable. With migrations 001–004 already present, add `005_descriptive_change.sql` next and append `SOURCE migrations/005_descriptive_change.sql` to **the existing `sql/build.sql` manifest**. After 005, the next migration is 006. There is no separate migration manifest. Every SQL migration must be listed exactly once in numeric order; gaps, unlisted files, missing historical files, changed applied checksums, and downgrade targets are refused. Migration SQL uses the database selected by the runner; it must not switch databases or manage accounts. Restore `DELIMITER ;` at the end of routine definitions.
 
 The runner holds a connection-level advisory lock throughout verification and migration, preventing two runners from upgrading the same database concurrently. Before executing each migration, it commits an `applying` history row. Only successful DDL and an atomic object-version/history update produce `applied`. SQL failure records `failed` when the server remains reachable; abrupt termination leaves `applying`. An empty history table indicates interruption during initial setup. All these incomplete states block further migrations and are never automatically replayed.
 
@@ -197,7 +264,9 @@ For this course implementation, recovery is deliberately manual: inspect the log
 python3 -B -m unittest discover -s tests -v
 ```
 
-These tests initialize their own temporary MySQL data directory, start a private server with networking disabled, and connect only through its temporary Unix socket. They do not connect to the installed project server. `MYSQL_BIN` and `MYSQLD_BIN` may select the client/server executable paths. The private server and its data are removed afterward.
+These tests require **no manual account provisioning or password entry**, including when launched from a terminal. They initialize their own temporary MySQL data directories, start private servers with networking disabled, provision their own admin/developer and restricted test accounts, and generate disposable credentials automatically. Root is used only for each private server's initial admin bootstrap and is then locked. The manual account-provisioning commands in step 2 still prompt normally.
+
+The tests connect only through their own temporary Unix sockets; they do not use `DEV_SOCKET`, connect to the installed project server, or require that server's credentials. `MYSQL_BIN` and `MYSQLD_BIN` may select the client/server executable paths. The private servers and their data are removed afterward. The suite currently contains 64 tests.
 
 ## Verify the Build
 
@@ -213,7 +282,7 @@ and no `FAIL` rows. To see each test individually, look at the full result table
 
 ### Objects and row counts
 
-Connect with `/usr/local/mysql/bin/mysql -u root -p` and run:
+Connect to the socket selected in step 2 with `/usr/local/mysql/bin/mysql --protocol=SOCKET --socket="$DEV_SOCKET" -u vsm_developer -p`. The following SQL assumes the default `vehicle_service_maintenance` schema; substitute your chosen `VSM_DATABASE` if different.
 
 ```sql
 USE vehicle_service_maintenance;
@@ -238,11 +307,10 @@ FROM information_schema.TABLE_CONSTRAINTS
 WHERE TABLE_SCHEMA = 'vehicle_service_maintenance'
 ORDER BY TABLE_NAME, CONSTRAINT_TYPE;
 
--- Roles and demo users
-SHOW GRANTS FOR role_service_advisor;
-SHOW GRANTS FOR role_technician;
-SHOW GRANTS FOR role_manager;
-SHOW GRANTS FOR 'sa_amy'@'localhost' USING role_service_advisor;
+-- Current account's grants. Each demo user can inspect their own role grants.
+-- Inspecting arbitrary accounts would need broader mysql access, which setup
+-- accounts deliberately do not receive.
+SHOW GRANTS;
 
 -- Row counts
 SELECT 'Customer' AS TableName, COUNT(*) AS RowCount FROM Customer
@@ -273,14 +341,11 @@ After building files 01 to 06 only, the sample data contains 4 customers, 5 vehi
 Log in as a demo user:
 
 ```bash
-/usr/local/mysql/bin/mysql -u tech_ben -p vehicle_service_maintenance
+/usr/local/mysql/bin/mysql --protocol=SOCKET --socket="$DEV_SOCKET" \
+    -u tech_ben -p "$VSM_DATABASE"
 ```
 
-Before making changes, identify the application user for auditing:
-
-```sql
-SET @app_user_id = 3;   -- tech_ben
-```
+After migration 004, logging in as `tech_ben` resolves UserID 3 through the registered session identity. You do not need to set `@app_user_id` to identify yourself. Older baseline-only examples use that variable; on the current schema it is checked against the authenticated person and cannot select a different actor. See [Reference values and responsible actors](#reference-values-and-responsible-actors) for the service-delegation distinction.
 
 ### Role summary
 

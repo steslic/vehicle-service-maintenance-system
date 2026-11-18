@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from contextlib import ExitStack
 
 from database import checksum, RunLog, Session, source_revision, verify_environment
 from migrate import HISTORY_FILE, load_migrations, run_migrations
@@ -40,18 +41,16 @@ def load_inputs(sql_dir):
 
 
 def load_build(sql_dir, database, with_demo_accounts, inputs=None):
-    """Flatten the existing SQL build into one fail-fast batch."""
+    """Yield manifest-ordered files; demo administration uses its own connection."""
     inputs = load_inputs(sql_dir) if inputs is None else inputs
-    chunks = [f"SET @build_with_demo_accounts = {int(with_demo_accounts)};\n"]
     for name, data in inputs.items():
         if name == HISTORY_FILE or name.startswith("migrations/"):
             continue  # The migration runner records and applies these separately.
         if name == DEMO_FILE and not with_demo_accounts:
-            chunks.append(f"SELECT 'SKIP optional {name}';\n")
+            yield name, f"SELECT 'SKIP optional {name}';\n"
             continue
         sql = re.sub(r"\b" + PROJECT_DATABASE + r"\b", database, data.decode("utf-8"))
-        chunks.append(f"\nSELECT 'OPERATION {name} sha256={checksum(data)}';\n{sql}\n")
-    return "".join(chunks)
+        yield name, f"\nSELECT 'OPERATION {name} sha256={checksum(data)}';\n{sql}\n"
 
 
 def main(argv=None):
@@ -62,8 +61,12 @@ def main(argv=None):
     parser.add_argument("--with-demo-accounts", action="store_true",
                         help="Opt in to demo users/roles; existing principals cause refusal")
     parser.add_argument("--mysql", default=os.environ.get("MYSQL_BIN", "mysql"))
-    parser.add_argument("-u", "--user", default="root")
+    parser.add_argument("-u", "--user", default="vsm_developer")
     parser.add_argument("-p", "--password", action="store_true", help="Prompt for a password")
+    parser.add_argument("--admin-user", default="vsm_admin",
+                        help="Separate account used only for demo provisioning and legacy routine grants")
+    parser.add_argument("--admin-password", action="store_true",
+                        help="Prompt for admin password (otherwise VSM_ADMIN_PASSWORD)")
     parser.add_argument("--socket")
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
@@ -72,6 +75,11 @@ def main(argv=None):
     parser.add_argument("--target-version", type=int, help="Stop at this migration version (default: latest)")
     parser.add_argument("--log-dir", type=Path, help="Build log directory (default: repository logs/)")
     args = parser.parse_args(argv)
+
+    if "root" in (args.user, args.admin_user):
+        parser.error("Root is reserved for initial bootstrapping; use developer/admin accounts")
+    if args.user == "vsm_admin" or args.user == args.admin_user:
+        parser.error("Builds require a developer account separate from the administrative account")
 
     if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", args.database):
         parser.error("Database names must use lowercase letters, digits, and underscores (max 64)")
@@ -95,7 +103,6 @@ def main(argv=None):
         migrations, snapshot = load_migrations(root / "sql", inputs)
         if args.target_version is not None and args.target_version not in [m[0] for m in migrations]:
             raise ValueError("Target version is not in sql/build.sql")
-        sql = load_build(root / "sql", args.database, args.with_demo_accounts, inputs)
         client_version = subprocess.check_output([args.mysql, "--no-defaults", "--version"], text=True).strip()
         # Explicit options override local defaults and keep failures from continuing/reconnecting.
         client = [args.mysql, "--no-defaults", "--batch", "--raw", "--skip-column-names",
@@ -109,11 +116,33 @@ def main(argv=None):
             if args.port is not None:
                 client.append(f"--port={args.port}")
         env = os.environ.copy()
+        env.pop("VSM_ADMIN_PASSWORD", None)
         if args.password:
             env["MYSQL_PWD"] = getpass.getpass("MySQL password: ")
 
-        with Session(client, env, log) as session:
+        with ExitStack() as connections:
+            session = connections.enter_context(Session(client, env, log))
             verify_environment(session, client_version, log)
+            admin = None
+
+            def get_admin():
+                nonlocal admin
+                if admin is None:
+                    admin_env = env.copy()
+                    # Never reuse the developer password for administration.
+                    admin_env.pop("MYSQL_PWD", None)
+                    if args.admin_password:
+                        admin_env["MYSQL_PWD"] = getpass.getpass("Administrative MySQL password: ")
+                    elif "VSM_ADMIN_PASSWORD" in os.environ:
+                        admin_env["MYSQL_PWD"] = os.environ["VSM_ADMIN_PASSWORD"]
+                    admin_client = [f"--user={args.admin_user}" if option.startswith("--user=") else option
+                                    for option in client]
+                    admin = connections.enter_context(Session(admin_client, admin_env, log))
+                    identity = admin.run("SELECT CURRENT_USER();")
+                    if identity.split("@", 1)[0] == "root":
+                        raise ValueError("Root is not an administrative build identity")
+                    log.write(f"ADMINISTRATIVE ACCOUNT: {identity}")
+                return admin
             exists = session.run("SELECT COUNT(*) FROM information_schema.SCHEMATA "
                                  f"WHERE SCHEMA_NAME = '{args.database}';") != "0"
             if args.migrate:
@@ -125,18 +154,26 @@ def main(argv=None):
                     raise ValueError(f"Refusing existing database '{args.database}'; contents were not changed")
                 if args.with_demo_accounts:
                     names = ", ".join(f"'{name}'" for name in DEMO_PRINCIPALS)
-                    collisions = session.run(f"SELECT User, Host FROM mysql.user WHERE User IN ({names});")
+                    collisions = get_admin().run(f"SELECT User, Host FROM mysql.user WHERE User IN ({names});")
                     if collisions:
                         raise ValueError("Refusing demo provisioning: existing users/roles would collide:\n" + collisions)
+                if (args.target_version or migrations[-1][0]) >= 3:
+                    get_admin()  # Fail authentication before creating/resetting a database.
                 if args.dev_reset:
                     log.write(f"OPERATION DEVELOPMENT RESET: {args.database}")
-                    sql = f"DROP DATABASE IF EXISTS `{args.database}`;\n" + sql
+                    session.run(f"DROP DATABASE IF EXISTS `{args.database}`;")
                 # CREATE without IF NOT EXISTS also guards concurrent creators.
                 log.write(f"Building {args.database}")
-                session.run(sql, echo=True)
+                session.run(f"SET @build_with_demo_accounts = {int(args.with_demo_accounts)};")
+                for name, sql in load_build(root / "sql", args.database, args.with_demo_accounts, inputs):
+                    operation_session = get_admin() if name == DEMO_FILE and args.with_demo_accounts else session
+                    if operation_session is not session:
+                        log.write(f"ADMIN OPERATION: {name}")
+                    operation_session.run(sql, echo=True)
                 log.write("DATABASE TEST SUITE: PASS (see individual results and summary above)")
             run_migrations(session, client, env, log, args.database, inputs, migrations, snapshot,
-                           sha, dirty, baseline=(not args.migrate or args.baseline), target=args.target_version)
+                           sha, dirty, baseline=(not args.migrate or args.baseline), target=args.target_version,
+                           get_admin=get_admin)
         log.write(f"{'Migration' if args.migrate else 'Build'} succeeded: {args.database}")
         status = "SUCCESS"
         return 0

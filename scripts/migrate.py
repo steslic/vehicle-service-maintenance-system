@@ -2,6 +2,7 @@
 
 import json
 import re
+from contextlib import contextmanager
 
 from database import checksum, Session
 
@@ -10,6 +11,61 @@ HISTORY_FILE = "09_schema_migrations.sql"
 BASELINE_FILE = "migrations/001_baseline.sql"
 SNAPSHOT_FILE = "migrations/baseline.json"
 METADATA_TABLES = {"schema_migrations", "schema_object_versions"}
+
+# These immutable migrations perform their own routine GRANTs. Give their
+# developer-definer helpers authority only on the exact routines, only while
+# the helper CALL runs. All account administration stays on a separate session.
+ROUTINE_GRANT_STEPS = {
+    "migrations/003_indicator_values.sql": (
+        "CALL sp_GrantReferenceReaders();", {"sp_ListIndicatorValues": {"EXECUTE"}}),
+    "migrations/004_session_identity_and_provenance.sql": (
+        "CALL sp_RestorePublicRoutineGrants();",
+        {"sp_CreateServiceAppointment": {"EXECUTE", "ALTER ROUTINE"},
+         "sp_CompleteRepair": {"EXECUTE", "ALTER ROUTINE"}}),
+}
+
+
+@contextmanager
+def routine_grant_authority(session, admin, log, database, routines):
+    account = session.run("SELECT CURRENT_USER();")
+    user, host = account.rsplit("@", 1)
+    principal = f"{literal(user)}@{literal(host)}"
+    previous = {}
+    try:
+        for name, required in routines.items():
+            old = admin.run("SELECT Proc_priv FROM mysql.procs_priv "
+                            f"WHERE Db = {literal(database)} AND User = {literal(user)} "
+                            f"AND Host = {literal(host)} AND Routine_name = {literal(name)};")
+            existing = {value.upper() for value in old.split(",") if value}
+            admin.run(f"GRANT {', '.join(sorted(required))} ON PROCEDURE `{database}`.`{name}` "
+                      f"TO {principal} WITH GRANT OPTION;")
+            previous[name] = existing
+            log.write(f"ADMIN temporary routine authority: {account} {database}.{name}")
+        yield
+    finally:
+        for name, existing in previous.items():
+            added = routines[name] - existing
+            if added:
+                admin.run(f"REVOKE {', '.join(sorted(added))} ON PROCEDURE `{database}`.`{name}` FROM {principal};")
+            if "GRANT" not in existing:
+                admin.run(f"REVOKE GRANT OPTION ON PROCEDURE `{database}`.`{name}` FROM {principal};")
+            log.write(f"ADMIN restored prior routine authority: {account} {database}.{name}")
+
+
+def apply_migration_sql(session, get_admin, log, database, filename, sql):
+    if filename not in ROUTINE_GRANT_STEPS:
+        session.run(sql)
+        return
+    call, routines = ROUTINE_GRANT_STEPS[filename]
+    if sql.count(call) != 1:
+        raise ValueError(f"Expected routine grant helper call missing/duplicated in {filename}")
+    before, after = sql.split(call)
+    # Retain the developer connection and its temporary grant snapshot table.
+    # No migration text is edited, and its full original checksum is recorded.
+    session.run(before)
+    with routine_grant_authority(session, get_admin(), log, database, routines):
+        session.run(call)
+    session.run(after)
 
 
 def literal(value):
@@ -29,7 +85,7 @@ def normalize_sql(sql, database):
     return "".join(parts).strip()
 
 
-def schema_fingerprints(session, database):
+def schema_fingerprints(session, database, get_admin=None, log=None):
     """Definitions only: row contents, AUTO_INCREMENT counters, and definers are excluded."""
     objects = {}
     schema = literal(database)
@@ -56,9 +112,16 @@ def schema_fingerprints(session, database):
                    FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = {schema};""",
     }
     for kind, query in queries.items():
-        for line in session.run(query).splitlines():
-            row = json.loads(line)
-            if any(value is None for value in row[1:2]):
+        rows = [json.loads(line) for line in session.run(query).splitlines()]
+        if kind == "PROCEDURE" and any(row[2] is None for row in rows) and get_admin is not None:
+            if log:
+                log.write(f"ADMIN metadata inspection: routine bodies in {database} have another definer")
+            # This query remains restricted to the target schema. SHOW_ROUTINE,
+            # when explicitly approved, belongs only to the administrative account.
+            rows = [json.loads(line) for line in get_admin().run(query).splitlines()]
+        for row in rows:
+            definition = row[2] if kind == "PROCEDURE" else row[1]
+            if definition is None:
                 raise ValueError(f"Cannot inspect definition of {kind} {row[0]}")
             actual_kind = row[1] if kind == "PROCEDURE" else kind
             objects[actual_kind + ":" + row[0].lower()] = checksum(
@@ -121,7 +184,7 @@ def stamp_objects(session, objects, version, sha, dirty):
 
 
 def run_migrations(session, command, env, log, database, inputs, migrations, snapshot,
-                   sha, dirty, baseline=False, target=None):
+                   sha, dirty, baseline=False, target=None, get_admin=None):
     target = migrations[-1][0] if target is None else target
     if target not in [item[0] for item in migrations]:
         raise ValueError("Target version is not in sql/build.sql")
@@ -138,7 +201,7 @@ def run_migrations(session, command, env, log, database, inputs, migrations, sna
         if session.run("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() "
                        "AND TABLE_NAME = 'schema_object_versions';") != "0":
             raise ValueError("Orphan migration metadata: baseline refused; inspect/restore the pre-run backup")
-        verify_objects(schema_fingerprints(session, database), snapshot, "Baseline")
+        verify_objects(schema_fingerprints(session, database, get_admin, log), snapshot, "Baseline")
         log.write("BASELINE SCHEMA VERIFICATION: PASS (no business rows changed)")
         log.write(f"OPERATION {HISTORY_FILE} sha256={checksum(inputs[HISTORY_FILE])}")
         session.run(inputs[HISTORY_FILE].decode("utf-8"))
@@ -161,16 +224,20 @@ def run_migrations(session, command, env, log, database, inputs, migrations, sna
             raise ValueError("Downgrades/out-of-order migration targets are not supported")
         registered = session.run("SELECT CONCAT(object_type, ':', object_name), definition_checksum "
                                  "FROM schema_object_versions;")
-        verify_objects(schema_fingerprints(session, database),
+        verify_objects(schema_fingerprints(session, database, get_admin, log),
                        dict(line.split("\t") for line in registered.splitlines()), "Deployed object")
+    if any(filename in ROUTINE_GRANT_STEPS for _, filename, _, _ in migrations[len(history):target]):
+        if get_admin is None:
+            raise ValueError("These migrations require a separate administrative connection for routine grants")
+        get_admin()  # Authenticate before starting an immutable DDL migration.
     for version, filename, digest, sql in migrations[len(history):target]:
         log.write(f"OPERATION migration {version:03d} {filename} sha256={digest} source={sha}")
         session.run("INSERT INTO schema_migrations "
                     "(version, filename, checksum, source_commit_sha, source_dirty, status) VALUES "
                     f"({version}, {literal(filename)}, {literal(digest)}, {literal(sha)}, {int(dirty)}, 'applying'); COMMIT;")
         try:
-            session.run(sql)
-            stamp_objects(session, schema_fingerprints(session, database), version, sha, dirty)
+            apply_migration_sql(session, get_admin, log, database, filename, sql)
+            stamp_objects(session, schema_fingerprints(session, database, get_admin, log), version, sha, dirty)
         except (RuntimeError, ValueError) as error:
             # A SQL error closes the fail-fast client. Use a new connection to
             # mark failure; the durable applying row already blocks other runners.

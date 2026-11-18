@@ -113,6 +113,10 @@ def mysql_version(value, component):
 
 def verify_environment(session, client_version, log):
     mysql_version(client_version, "Client")
+    identity = json.loads(session.run("SELECT JSON_ARRAY(USER(), CURRENT_USER());"))
+    if identity[1].split("@", 1)[0] == "root":
+        raise ValueError("Root is reserved for initial account bootstrapping; use vsm_developer")
+    log.write(f"DATABASE SESSION: {identity[0]}; AUTHENTICATED ACCOUNT: {identity[1]}")
     settings = json.loads(session.run("""
         SELECT JSON_OBJECT('version', VERSION(), 'distribution', @@version_comment,
           'engine', @@session.default_storage_engine, 'sql_mode', @@session.sql_mode,
@@ -121,6 +125,8 @@ def verify_environment(session, client_version, log):
           'isolation', @@session.transaction_isolation, 'read_only', @@global.read_only,
           'super_read_only', @@global.super_read_only,
           'flush_at_commit', @@global.innodb_flush_log_at_trx_commit,
+          'binary_logging', @@global.log_bin,
+          'trusted_function_creators', @@global.log_bin_trust_function_creators,
           'charset', @@character_set_connection, 'collation', @@collation_connection);
     """))
     log.write("MYSQL CLIENT: " + client_version)
@@ -141,6 +147,9 @@ def verify_environment(session, client_version, log):
         raise ValueError("Durable migration checkpoints require innodb_flush_log_at_trx_commit = 1")
     if settings["charset"] != "utf8mb4":
         raise ValueError("The connection must use utf8mb4")
+    if settings["binary_logging"] and not settings["trusted_function_creators"]:
+        raise ValueError("Non-root routine/trigger creation requires log_bin_trust_function_creators=ON "
+                         "when binary logging is enabled; ask the server administrator (no privilege fallback)")
     # MySQL stores the creation-time SQL mode on routines and triggers. Pin it
     # after validating defaults so compatible servers produce the same objects.
     session.run(f"SET SESSION sql_mode = '{BUILD_SQL_MODE}'; SET SESSION time_zone = '+00:00';")
