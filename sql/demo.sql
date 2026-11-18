@@ -1,6 +1,9 @@
 -- =====================================================================
 -- Vehicle Service and Maintenance Management System
 -- demo.sql : live demonstration script
+-- Historical version-2 demo: root asserts human identities in these examples.
+-- Use --target-version 2 on a private disposable server to reproduce it.
+-- Current registered-person/service examples: docs/reference-and-identity.md.
 --
 -- One example for every item in "Required Final Demonstration":
 --   1. Fresh build and data initialization          (root terminal)
@@ -27,7 +30,7 @@
 -- 1.1 In shell (documented README process):
 --   git clone https://github.com/steslic/vehicle-service-maintenance-system.git
 --   cd vehicle-service-maintenance-system/sql
---   python3 ../scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p --with-demo-accounts
+--   python3 ../scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p --with-demo-accounts --target-version 2
 
 -- Tests already run during the build and change sample data; use a fresh database for a new run.
 -- Point 06 load summary and the final PASS count (no FAIL rows)

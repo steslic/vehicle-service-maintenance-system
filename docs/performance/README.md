@@ -25,7 +25,7 @@ Statistics are refreshed with `ANALYZE TABLE` before each measurement. MySQL 26.
 
 ## How to Reproduce
 
-The captured outputs below are historical measurements from a sample-only build. The current canonical build also runs the database tests and installs migration metadata, so new row counts and timings can differ. Keep new output separate from that historical evidence.
+The captured outputs below are historical measurements from a sample-only build. Reproduce this historical loader at schema version 2: it asserts human identities from a root session, which current session-identity validation correctly rejects. New performance loaders must use registered actors. The canonical build also runs the database tests and installs migration metadata, so new row counts and timings can differ. Keep new output separate from that historical evidence.
 
 These performance SQL files target `vehicle_service_maintenance` explicitly. Run them only on a **separate disposable MySQL server**, using its explicit Unix socket for every command. Do not point them at the installed project server. From the repository root:
 
@@ -35,7 +35,7 @@ DEV_SOCKET=/absolute/path/to/disposable/mysql.sock
 
 # The same safe entry point and manifest used by every normal build.
 python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
-    --socket "$DEV_SOCKET" --database vehicle_service_maintenance
+    --socket "$DEV_SOCKET" --database vehicle_service_maintenance --target-version 2
 
 mkdir -p logs/performance
 /usr/local/mysql/bin/mysql --protocol=SOCKET --socket="$DEV_SOCKET" -vvv -u root -p \

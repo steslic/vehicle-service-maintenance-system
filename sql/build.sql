@@ -19,3 +19,5 @@ SOURCE 07_tests.sql
 SOURCE 09_schema_migrations.sql
 SOURCE migrations/001_baseline.sql
 SOURCE migrations/002_customer_name_index.sql
+SOURCE migrations/003_indicator_values.sql
+SOURCE migrations/004_session_identity_and_provenance.sql

@@ -29,8 +29,10 @@ scripts/build.py           Safe, fail-fast build runner
 scripts/database.py        MySQL session, preflight checks, and timestamped logging
 scripts/migrate.py         Ordered migration and schema verification helpers
 sql/09_schema_migrations.sql  Migration history table
-sql/migrations/            Baseline fingerprints and ordered SQL upgrades
-tests/test_build.py        Build and migration tests on a private disposable server
+sql/migrations/            Baseline and ordered upgrades through reference/identity metadata
+tests/test_build.py        Build and migration regression tests
+tests/test_reference_identity.py  Reference, actor, and provenance regressions
+tests/mysql_test_support.py  Shared private disposable MySQL server harness
 ```
 
 ## Prerequisites
@@ -85,6 +87,8 @@ The runner refuses an existing `vehicle_service_maintenance` database and leaves
 | 9    | `09_schema_migrations.sql` | History table after baseline verification         |
 | 10   | `migrations/001_baseline.sql` | Register the baseline and object versions       |
 | 11   | `migrations/002_customer_name_index.sql` | Add a customer-name index             |
+| 12   | `migrations/003_indicator_values.sql` | Reference catalog, domain bindings, dropdowns/report labels |
+| 13   | `migrations/004_session_identity_and_provenance.sql` | Verified actors and provenance guards |
 
 Use the runner instead of piping `build.sql` or concatenating SQL files into the client. Direct execution of `build.sql` raises an error directing you to the runner.
 
@@ -131,7 +135,7 @@ To demonstrate an upgrade on a new disposable database:
 python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
     --database vsm_dev_upgrade --target-version 1
 
-# Upgrade to the latest version (version 2 adds only idx_Customer_Name).
+# Upgrade to the latest version (currently 4).
 python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
     --database vsm_dev_upgrade --migrate
 
@@ -140,7 +144,7 @@ python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u root -p \
     --database vsm_dev_upgrade --migrate
 ```
 
-A normal new build without `--target-version` finishes at the latest manifest version. The original 13 business tables, procedures, triggers, sample data, and existing indexes remain; versioning adds two metadata tables and one customer-name index.
+A normal new build without `--target-version` finishes at the latest manifest version (currently 4). Versions 1 and 2 remain immutable. Later migrations add reference/identity metadata and replace the affected procedures and guards while retaining existing business rows and lifecycle transitions. See [Reference values, identity, and provenance](docs/reference-and-identity.md) for the domain inventory, delegation setup, and remaining workflow work.
 
 For an **unversioned existing database**, first stop application writes and take a backup. Explicitly request adoption:
 
@@ -164,6 +168,18 @@ FROM schema_object_versions ORDER BY object_type, object_name;
 ```
 
 The first table records migration versions, exact file digests, database timestamps, source revisions, and status. The second exposes the last migration that changed each deployed table, view, procedure/function, or trigger. Unchanged objects retain their earlier version. For an adopted database, the source SHA identifies the verified baseline registration, not an invented historical deployment date. Later runs also reject object-definition drift outside migrations.
+
+### Reference values and responsible actors
+
+The latest schema provides `IndicatorValue` and `sp_ListIndicatorValues` for database-backed dropdowns. For example:
+
+```sql
+INSERT INTO IndicatorValue (IndicatorName, ValueCode, Description, DisplayOrder)
+VALUES ('repair_type', 'Wheel Alignment', 'Wheel alignment and balancing', 25);
+CALL sp_ListIndicatorValues('repair_type');
+```
+
+Registered people are resolved from the full database session login. A caller-supplied person ID can only assert that identity; service calls need explicit person/operation delegations, and the service should have EXECUTE only. An unmapped administrative connection is no longer an operational acting-user fallback. Audit rows record the session account separately from the responsible person; old session identities remain unknown. Follow the [identity and reference guide](docs/reference-and-identity.md) for direct-user, service-account, and provenance details.
 
 ### Adding a migration and recovering failures
 
@@ -202,7 +218,7 @@ Connect with `/usr/local/mysql/bin/mysql -u root -p` and run:
 ```sql
 USE vehicle_service_maintenance;
 
--- Base tables (expect 15: 13 business + 2 versioning metadata tables)
+-- Base tables (expect 21: 13 business + 2 versioning + 6 reference/identity tables)
 SHOW FULL TABLES WHERE Table_type = 'BASE TABLE';
 
 -- Views, procedures, and triggers
