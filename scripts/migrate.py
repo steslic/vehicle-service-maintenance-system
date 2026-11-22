@@ -22,6 +22,11 @@ ROUTINE_GRANT_STEPS = {
         "CALL sp_RestorePublicRoutineGrants();",
         {"sp_CreateServiceAppointment": {"EXECUTE", "ALTER ROUTINE"},
          "sp_CompleteRepair": {"EXECUTE", "ALTER ROUTINE"}}),
+    "migrations/006_standardized_error_handling.sql": (
+        "CALL sp_RestoreErrorRoutineGrants();",
+        {name: {"EXECUTE", "ALTER ROUTINE"} for name in (
+            "sp_ListIndicatorValues", "sp_ValidateIndicator", "sp_ResolveActor",
+            "sp_CreateServiceAppointment", "sp_CompleteRepair", "sp_ListAuditTrail")}),
 }
 AUDIT_READER_MIGRATION = "migrations/005_temporal_history.sql"
 

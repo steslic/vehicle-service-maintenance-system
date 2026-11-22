@@ -20,7 +20,7 @@ MySQL account/role administration is inherently server-scoped. `vsm_admin` is tr
 The unchanged baseline test and migrations require these SELECT columns:
 
 - `mysql.tables_priv`: User, Host, Db, Table_name (baseline role/view check and migration 003 reference-reader recipients).
-- `mysql.procs_priv`: User, Host, Db, Routine_name, Proc_priv (migration 004 captures and restores existing native routine grants).
+- `mysql.procs_priv`: User, Host, Db, Routine_name, Proc_priv (migrations 004 and 006 capture and restore existing native routine grants).
 
 Both accounts receive only these columns. The admin can delegate those column reads when provisioning the developer. The admin additionally reads `mysql.user(User, Host)` to detect demo-account collisions; the developer has no mysql.user read access. These legacy queries necessarily expose grant-recipient metadata across the server, not business data or credential hashes. No broad `SELECT ON mysql.*` is granted to make arbitrary `SHOW GRANTS FOR other_account` commands work. Named users can inspect their own grants. See [MySQL GRANT semantics](https://dev.mysql.com/doc/refman/8.0/en/grant.html).
 
@@ -63,16 +63,17 @@ Migration 005 adds a separate admin-only grant step after its developer-owned te
 
 ## Immutable migration exceptions
 
-Migration 003 calls `sp_GrantReferenceReaders`; migration 004 calls `sp_RestorePublicRoutineGrants`. They execute with the developer definer's privileges, and migration 004 relies on a temporary table in that same connection. Moving the entire migration to an admin session would change its owner and violate the account boundary; granting schema-level GRANT OPTION would allow delegation of every held schema privilege.
+Migration 003 calls `sp_GrantReferenceReaders`; migration 004 calls `sp_RestorePublicRoutineGrants`; migration 006 calls `sp_RestoreErrorRoutineGrants`. They execute with the developer definer's privileges, and migrations 004 and 006 rely on temporary grant-snapshot tables in that same connection. Moving the entire migration to an admin session would change its owner and violate the account boundary; granting schema-level GRANT OPTION would allow delegation of every held schema privilege.
 
 Instead the runner executes the unchanged SQL up to the existing helper call, and the admin temporarily grants the developer routine-level GRANT OPTION with:
 
 - EXECUTE on `sp_ListIndicatorValues` for migration 003.
 - EXECUTE and ALTER ROUTINE on `sp_CreateServiceAppointment` and `sp_CompleteRepair` for migration 004.
+- EXECUTE and ALTER ROUTINE on `sp_ListIndicatorValues`, `sp_ValidateIndicator`, `sp_ResolveActor`, `sp_CreateServiceAppointment`, `sp_CompleteRepair`, and `sp_ListAuditTrail` for migration 006. These six procedures are recreated to assign stable error numbers and retain their native grants; internal procedures acquire no new application grants.
 
-The developer runs the original helper CALL, then the admin immediately restores the developer's prior routine grants before the remaining SQL runs. Public-role grants, including existing ALTER ROUTINE and grant options, are restored by the original migration. No database/global GRANT OPTION is given to the developer. Applied migration files, complete-file checksums, ordering, and durable failure states are unchanged. Future migrations should keep account/privilege administration separate rather than require additional authority.
+The developer runs the helper CALL, then the admin immediately restores the developer's prior routine grants before the remaining SQL runs. Existing recipients' EXECUTE/ALTER ROUTINE privileges and grant options are restored by the migration. No database/global GRANT OPTION is given to the developer. Applied migration files, complete-file checksums, ordering, and durable failure states are unchanged. Migration 006 adds no account privileges beyond this existing temporary, routine-scoped mechanism.
 
-On ordinary errors and KeyboardInterrupt, a `finally` block removes this temporary authority. An OS kill or loss of the administrative connection during the short helper call can prevent cleanup. The database remains an interrupted/failed migration and must not be automatically retried. Before the existing manual backup/recovery process, reconnect as admin, inspect `mysql.procs_priv` for the developer on the three named routines in the affected schema, and revoke any unexpected GRANT OPTION. For example, after confirming the routine exists and no prior grant option was intended:
+On ordinary errors and KeyboardInterrupt, a `finally` block removes this temporary authority. An OS kill or loss of the administrative connection during the short helper call can prevent cleanup. The database remains an interrupted/failed migration and must not be automatically retried. Before the existing manual backup/recovery process, reconnect as admin, inspect `mysql.procs_priv` for the developer on every routine listed for the interrupted migration, and revoke any unexpected GRANT OPTION. For example, after confirming the routine exists and no prior grant option was intended:
 
 ```sql
 REVOKE GRANT OPTION ON PROCEDURE vsm_dev_example.sp_CompleteRepair
@@ -80,6 +81,8 @@ FROM 'vsm_developer'@'localhost';
 ```
 
 Do not erase failed history/checksums or grant blanket privileges to get past a failure. Admin authentication is checked before fresh-build DDL or starting a migration that needs these exceptions.
+
+Before migrations that recreate routines, retain a native routine-grant inventory as well as the database backup. Dropping a routine removes its routine-level grants; the in-session temporary snapshot cannot recover them after connection loss. Manual recovery must restore those original grants separately after restoring the schema. See [error-handling.md](error-handling.md) for migration 006 precautions.
 
 ## Other administrative boundaries
 

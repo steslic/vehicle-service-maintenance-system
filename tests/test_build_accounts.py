@@ -166,7 +166,7 @@ class BuildAccountTests(support.DisposableMySQLTestCase):
                           "CALL sp_CreateServiceAppointment(1, 5, 1, 1, CURDATE() + INTERVAL 130 DAY, 'Denied', 60);",
                           check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('not a registered principal', result.stderr)
+        self.assertIn('ERROR 52001 (', result.stderr)
         self.assertEqual(self.scalar(f"SELECT CONCAT(SessionAccount, ':', COALESCE(UserID, 'NULL')) "
                                      f"FROM `{self.database}`.AuditLog WHERE Action = 'Rejected' "
                                      "ORDER BY AuditLogID DESC LIMIT 1;"), 'vsm_developer@localhost:NULL')

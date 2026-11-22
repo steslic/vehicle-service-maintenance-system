@@ -5,6 +5,7 @@ import subprocess
 import unittest
 
 import mysql_test_support as support
+from error_contract import ERRORS
 
 
 class ReferenceIdentityTests(support.DisposableMySQLTestCase):
@@ -29,7 +30,8 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         if error:
             self.assertNotEqual(result.returncode, 0, result.stdout)
-            self.assertIn(error, result.stderr)
+            expected = f'ERROR {ERRORS[error][0]} (' if error in ERRORS else error
+            self.assertIn(expected, result.stderr)
         else:
             self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
@@ -71,7 +73,7 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
         result = self.actor("sa_amy", "CALL sp_ListIndicatorValues('appointment_status');")
         self.assertEqual([line.split("\t")[1] for line in result.splitlines()],
                          ["Scheduled", "Checked In", "In Progress", "Completed", "Cancelled", "No Show"])
-        self.actor("tech_ben", "CALL sp_ListIndicatorValues('missing_domain');", "Unknown indicator domain")
+        self.actor("tech_ben", "CALL sp_ListIndicatorValues('missing_domain');", 'VSM_UNKNOWN_INDICATOR')
 
     def test_insert_adds_a_legal_repair_type_without_code_changes(self):
         before = self.actor("sa_amy", "CALL sp_ListIndicatorValues('repair_type');")
@@ -91,9 +93,9 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
                                            ("Open", "Unknown repair", "repair_type")):
             with self.subTest(domain=domain, code=repair_type, status=status):
                 self.actor("sa_amy", "INSERT INTO Repair (AppointmentID, RepairDateTime, RepairType, RepairDescription, Status) "
-                           f"VALUES (9, NOW(), '{repair_type}', 'Rejected', '{status}');", "Invalid indicator value for " + domain)
-        self.actor("mgr_mike", "UPDATE Part SET ActiveStatus = 2 WHERE PartID = 1;", "active_status")
-        self.actor("mgr_mike", "SET foreign_key_checks = 0; UPDATE Part SET ActiveStatus = 2 WHERE PartID = 1;", "active_status")
+                           f"VALUES (9, NOW(), '{repair_type}', 'Rejected', '{status}');", 'VSM_INVALID_INDICATOR')
+        self.actor("mgr_mike", "UPDATE Part SET ActiveStatus = 2 WHERE PartID = 1;", 'VSM_INVALID_INDICATOR')
+        self.actor("mgr_mike", "SET foreign_key_checks = 0; UPDATE Part SET ActiveStatus = 2 WHERE PartID = 1;", 'VSM_INVALID_INDICATOR')
 
     def test_referenced_codes_cannot_be_removed_and_invalid_labels_are_visible(self):
         result = self.sql(f"DELETE FROM `{self.database}`.IndicatorValue WHERE IndicatorName = 'repair_status' AND ValueCode = 'Open';", check=False)
@@ -102,7 +104,7 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
 
     def test_new_status_membership_does_not_create_a_workflow_edge(self):
         self.sql(f"INSERT INTO `{self.database}`.IndicatorValue VALUES ('invoice_status', 'Paid', 'Paid', 3);")
-        self.actor("sa_amy", "UPDATE Invoice SET Status = 'Paid' WHERE InvoiceID = 3;", "Invalid invoice status transition")
+        self.actor("sa_amy", "UPDATE Invoice SET Status = 'Paid' WHERE InvoiceID = 3;", 'VSM_INVALID_TRANSITION')
         self.assertEqual(self.scalar(f"SELECT Status FROM `{self.database}`.Invoice WHERE InvoiceID = 3;"), "Draft")
 
     def test_named_user_is_derived_and_system_person_are_recorded(self):
@@ -114,38 +116,38 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
 
     def test_forged_person_is_rejected_and_real_session_is_audited(self):
         self.actor("sa_amy", "CALL sp_CreateServiceAppointment(1, 5, 1, 1, CURDATE() + INTERVAL 130 DAY, 'Forged', 60);",
-                   "Acting user must be the logged-in user")
+                   'VSM_ACTOR_MISMATCH')
         self.assertEqual(self.scalar(f"SELECT CONCAT(UserID, ':', SessionAccount) FROM `{self.database}`.AuditLog "
                                      "WHERE Action = 'Rejected' ORDER BY AuditLogID DESC LIMIT 1;"), "2:sa_amy@localhost")
         self.actor("sa_amy", "SET @app_user_id = 1; UPDATE RepairEstimate SET Status = 'Approved', ApprovedByUserID = 1 WHERE EstimateID = 3;",
-                   "Acting user must be the logged-in user")
+                   'VSM_ACTOR_MISMATCH')
 
     def test_unmapped_login_and_invalid_responsible_actor_fail_closed(self):
         self.admin_sql(f"CREATE USER 'unknown_test'@'localhost' IDENTIFIED BY 'Unknown#2026'; "
                  f"GRANT EXECUTE ON PROCEDURE `{self.database}`.sp_CreateServiceAppointment TO 'unknown_test'@'localhost';")
         self.actor("unknown_test", "SET @app_user_id = 1; CALL sp_CreateServiceAppointment(1, 5, 1, 2, CURDATE() + INTERVAL 130 DAY, 'Unknown', 60);",
-                   "not a registered principal")
+                   'VSM_UNREGISTERED_SESSION')
         self.assertEqual(self.scalar(f"SELECT CONCAT(COALESCE(UserID, 'NULL'), ':', SessionAccount) FROM `{self.database}`.AuditLog "
                                      "WHERE Action = 'Rejected' ORDER BY AuditLogID DESC LIMIT 1;"), "NULL:unknown_test@localhost")
         self.actor("sa_amy", "CALL sp_CreateServiceAppointment(1, 5, 1, 99999, CURDATE() + INTERVAL 130 DAY, 'Unknown actor', 60);",
-                   "Acting user must be the logged-in user")
+                   'VSM_ACTOR_MISMATCH')
 
     def test_host_mapping_and_active_native_roles_are_enforced(self):
         self.actor("sa_amy", "SET ROLE NONE; CALL sp_CreateServiceAppointment(1, 5, 1, 2, CURDATE() + INTERVAL 130 DAY, 'No role', 60);", "ERROR 1370")
         self.sql(f"UPDATE `{self.database}`.DatabasePrincipal SET SessionAccount = 'tech_ben@elsewhere' WHERE UserID = 3;")
         self.assertEqual(self.actor("tech_ben", "SELECT COUNT(*) FROM vw_MyRepairs;"), "0")
-        self.actor("tech_ben", "CALL sp_CompleteRepair(9, 1, 3, NULL);", "not a registered principal")
+        self.actor("tech_ben", "CALL sp_CompleteRepair(9, 1, 3, NULL);", 'VSM_UNREGISTERED_SESSION')
 
     def test_service_delegation_is_scoped_and_cannot_escalate_person_permissions(self):
         self.service()
         appointment = self.book("svc_test", "2")
         self.assertEqual(self.scalar(f"SELECT CONCAT(UserID, ':', SessionAccount) FROM `{self.database}`.AuditLog "
                                      f"WHERE AffectedEntity = 'ServiceAppointment' AND AffectedRecordID = {appointment};"), "2:svc_test@localhost")
-        self.actor("svc_test", "CALL sp_CreateServiceAppointment(1, 5, 1, 1, CURDATE() + INTERVAL 130 DAY, 'Denied', 60);", "not authorized to act")
-        self.actor("svc_test", "CALL sp_CreateServiceAppointment(1, 5, 1, NULL, CURDATE() + INTERVAL 130 DAY, 'Missing person', 60);", "not authorized to act")
+        self.actor("svc_test", "CALL sp_CreateServiceAppointment(1, 5, 1, 1, CURDATE() + INTERVAL 130 DAY, 'Denied', 60);", 'VSM_DELEGATION_DENIED')
+        self.actor("svc_test", "CALL sp_CreateServiceAppointment(1, 5, 1, NULL, CURDATE() + INTERVAL 130 DAY, 'Missing person', 60);", 'VSM_DELEGATION_DENIED')
         self.sql(f"INSERT INTO `{self.database}`.PrincipalDelegation (SessionAccount, UserID, ProcedureName) "
                  "VALUES ('svc_test@localhost', 3, 'sp_CreateServiceAppointment');")
-        self.actor("svc_test", "CALL sp_CreateServiceAppointment(1, 5, 1, 3, CURDATE() + INTERVAL 130 DAY, 'Role escalation', 60);", "not entitled")
+        self.actor("svc_test", "CALL sp_CreateServiceAppointment(1, 5, 1, 3, CURDATE() + INTERVAL 130 DAY, 'Role escalation', 60);", 'VSM_OPERATION_DENIED')
 
     def test_service_context_cannot_be_forged_with_variables_or_direct_writes(self):
         self.service()
@@ -156,7 +158,7 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
         # Even an accidental direct grant cannot give a service an operation context.
         self.admin_sql(f"GRANT UPDATE ON `{self.database}`.ServiceAppointment TO 'svc_test'@'localhost'; "
                  f"GRANT SELECT ON `{self.database}`.ServiceAppointment TO 'svc_test'@'localhost';")
-        self.actor("svc_test", "SET @app_user_id = 2; UPDATE ServiceAppointment SET EstimatedDuration = 61 WHERE AppointmentID = 9;", "not authorized to act")
+        self.actor("svc_test", "SET @app_user_id = 2; UPDATE ServiceAppointment SET EstimatedDuration = 61 WHERE AppointmentID = 9;", 'VSM_DELEGATION_DENIED')
 
     def test_delegated_repair_completion_keeps_stock_and_all_audit_attribution(self):
         self.service()
@@ -174,7 +176,7 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
 
     def test_rejected_service_request_has_correct_attribution_and_leaves_no_context(self):
         self.service()
-        self.actor("svc_test", "CALL sp_CompleteRepair(99999, 1, 3, NULL);", "Repair does not exist")
+        self.actor("svc_test", "CALL sp_CompleteRepair(99999, 1, 3, NULL);", 'VSM_REPAIR_NOT_FOUND')
         self.assertEqual(self.scalar(f"SELECT CONCAT(UserID, ':', SessionAccount) FROM `{self.database}`.AuditLog "
                                      "WHERE Action = 'Rejected' ORDER BY AuditLogID DESC LIMIT 1;"), "3:svc_test@localhost")
         self.assertEqual(self.scalar(f"SELECT COUNT(*) FROM `{self.database}`.OperationContext;"), "0")
@@ -185,24 +187,24 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
                 result = self.sql(f"INSERT INTO `{self.database}`.UserAccount (Username, Name, RoleType, TechnicianID) "
                                   f"VALUES ('invalid_profile', 'Invalid', '{role}', {tech});", check=False)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("profile do not match", result.stderr)
+                self.assertIn("ERROR 51005 (", result.stderr)
         for statement in ("INSERT INTO Customer (Name) VALUES ('   ');", "UPDATE Vehicle SET Make = '' WHERE VehicleID = 1;"):
-            self.actor("sa_amy", statement, "cannot be blank")
+            self.actor("sa_amy", statement, 'VSM_REQUIRED_FIELD')
         self.sql(f"UPDATE `{self.database}`.Technician SET ActiveStatus = 0 WHERE TechnicianID = 1;")
-        self.actor("tech_ben", "CALL sp_CompleteRepair(9, 1, 3, NULL);", "invalid or inactive")
+        self.actor("tech_ben", "CALL sp_CompleteRepair(9, 1, 3, NULL);", 'VSM_ACTOR_INACTIVE')
 
     def test_creators_and_premature_completion_metadata_cannot_be_forged(self):
         self.actor("sa_amy", "INSERT INTO Invoice (AppointmentID, CreatedByUserID, InvoiceDate, Status, TotalAmount) "
-                   "VALUES (9, 1, CURDATE(), 'Draft', 0);", "Creating user must match")
+                   "VALUES (9, 1, CURDATE(), 'Draft', 0);", 'VSM_ACTOR_MISMATCH')
         self.actor("sa_amy", "INSERT INTO Repair (AppointmentID, RepairDateTime, RepairType, RepairDescription, Status, "
-                   "CompletedByTechnicianID, CompletionDateTime) VALUES (9, NOW(), 'Diagnostic', 'Forged', 'Open', 1, NOW());", "cannot contain completion metadata")
-        self.actor("mgr_mike", "UPDATE Repair SET CompletedByTechnicianID = 1, CompletionDateTime = NOW() WHERE RepairID = 9;", "only be set by completion")
-        self.actor("sa_amy", "UPDATE ServiceAppointment SET CreationTimestamp = '1900-01-01' WHERE AppointmentID = 9;", "Creation timestamp cannot be changed")
+                   "CompletedByTechnicianID, CompletionDateTime) VALUES (9, NOW(), 'Diagnostic', 'Forged', 'Open', 1, NOW());", 'VSM_PREMATURE_PROVENANCE')
+        self.actor("mgr_mike", "UPDATE Repair SET CompletedByTechnicianID = 1, CompletionDateTime = NOW() WHERE RepairID = 9;", 'VSM_PROVENANCE_IMMUTABLE')
+        self.actor("sa_amy", "UPDATE ServiceAppointment SET CreationTimestamp = '1900-01-01' WHERE AppointmentID = 9;", 'VSM_PROVENANCE_IMMUTABLE')
 
     def test_draft_decision_metadata_is_rejected_and_event_clocks_are_database_owned(self):
         self.actor("sa_amy", "INSERT INTO RepairEstimate (AppointmentID, CreatedByUserID, EstimateDate, Status, TotalAmount, ApprovedByUserID) "
-                   "VALUES (9, 2, CURDATE(), 'Draft', 0, 1);", "Draft estimates cannot contain approval metadata")
-        self.actor("sa_amy", "UPDATE Invoice SET FinalizedByUserID = 1, FinalizationDateTime = '1900-01-01' WHERE InvoiceID = 3;", "only be set by finalization")
+                   "VALUES (9, 2, CURDATE(), 'Draft', 0, 1);", 'VSM_PREMATURE_PROVENANCE')
+        self.actor("sa_amy", "UPDATE Invoice SET FinalizedByUserID = 1, FinalizationDateTime = '1900-01-01' WHERE InvoiceID = 3;", 'VSM_PROVENANCE_IMMUTABLE')
         self.actor("mgr_mike", "UPDATE RepairEstimate SET Status = 'Approved', ApprovalDateTime = '1900-01-01' WHERE EstimateID = 3;")
         self.assertEqual(self.scalar(f"SELECT ABS(TIMESTAMPDIFF(SECOND, ApprovalDateTime, UTC_TIMESTAMP())) < 10 FROM `{self.database}`.RepairEstimate WHERE EstimateID = 3;"), "1")
         # The existing baseline suite deliberately edits a draft line's price.
@@ -229,7 +231,7 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
     def test_role_policy_cannot_invalidate_referenced_profiles(self):
         result = self.sql(f"UPDATE `{self.database}`.UserRolePolicy SET RequiresTechnician = 0 WHERE RoleType = 'Technician';", check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("invalidate existing user profiles", result.stderr)
+        self.assertIn("ERROR 54006 (", result.stderr)
         result = self.sql(f"DELETE FROM `{self.database}`.UserRolePolicy WHERE RoleType = 'Technician';", check=False)
         self.assertNotEqual(result.returncode, 0)
 
@@ -277,7 +279,7 @@ class ReferenceIdentityTests(support.DisposableMySQLTestCase):
         appointment = self.book()
         repair = self.open_repair(appointment)
         self.actor("tech_ben", f"UPDATE vw_MyRepairs SET Status = 'In Progress' WHERE RepairID = {repair};")
-        self.actor("mgr_mike", f"UPDATE Repair SET Status = 'Completed', CompletedByTechnicianID = 2 WHERE RepairID = {repair};", "must be assigned")
+        self.actor("mgr_mike", f"UPDATE Repair SET Status = 'Completed', CompletedByTechnicianID = 2 WHERE RepairID = {repair};", 'VSM_OPERATION_DENIED')
         self.actor("mgr_mike", f"UPDATE Repair SET Status = 'Completed', CompletedByTechnicianID = 1, "
                    f"CompletionDateTime = '1900-01-01' WHERE RepairID = {repair};")
         self.assertEqual(self.scalar(f"SELECT CompletedByTechnicianID = 1 AND ABS(TIMESTAMPDIFF(SECOND, CompletionDateTime, UTC_TIMESTAMP())) < 10 "

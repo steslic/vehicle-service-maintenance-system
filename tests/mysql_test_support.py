@@ -198,7 +198,9 @@ class DisposableMySQLTestCase(unittest.TestCase):
             order = ", ".join(f"`{column}`" for column in columns.split(","))
             columns = self.scalar("SELECT COLUMN_NAME FROM information_schema.COLUMNS "
                                   f"WHERE TABLE_SCHEMA = '{self.database}' AND TABLE_NAME = '{table}' "
-                                  "AND EXTRA NOT LIKE '%GENERATED%' AND COLUMN_NAME <> 'SessionAccount' "
+                                  "AND EXTRA NOT LIKE '%GENERATED%' AND COLUMN_NAME NOT IN "
+                                  "('SessionAccount', 'ApplicationErrorID', 'ErrorClass', 'ErrorSQLSTATE', "
+                                  "'ErrorNumber', 'ErrorMessage', 'TransactionOutcome') "
                                   "ORDER BY ORDINAL_POSITION;")
             selected = ", ".join(f"`{column}`" for column in columns.splitlines())
             result.append((table, self.scalar(f"SELECT {selected} FROM `{self.database}`.`{table}` ORDER BY {order};")))

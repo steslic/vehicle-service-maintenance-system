@@ -157,19 +157,19 @@ class TemporalHistoryTests(support.DisposableMySQLTestCase):
         self.actor('mgr_mike', 'UPDATE CustomerHistory SET Name = Name WHERE CustomerID = 7001;', 'ERROR 1142')
         self.admin_sql(f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{self.database}`.CustomerHistory TO 'sa_amy'@'localhost'; "
                        f"GRANT INSERT, UPDATE, DELETE ON `{self.database}`.TemporalEvent TO 'sa_amy'@'localhost';")
-        self.actor('sa_amy', "SET @history_authorized = 1; UPDATE CustomerHistory SET Name = 'Forged' WHERE CustomerID = 7001;", 'immutable')
-        self.actor('sa_amy', 'DELETE FROM CustomerHistory WHERE CustomerID = 7001;', 'cannot be deleted')
+        self.actor('sa_amy', "SET @history_authorized = 1; UPDATE CustomerHistory SET Name = 'Forged' WHERE CustomerID = 7001;", 'VSM_HISTORY_WRITE_DENIED')
+        self.actor('sa_amy', 'DELETE FROM CustomerHistory WHERE CustomerID = 7001;', 'VSM_HISTORY_WRITE_DENIED')
         self.actor('sa_amy', "INSERT INTO CustomerHistory (CustomerID, Name, HistoryVersion, HistoryRecordedAt, HistoryOrigin) "
-                   "VALUES (7002, 'Forged', 1, NOW(), 'Insert');", 'protected maintenance')
-        self.actor('sa_amy', 'DELETE FROM TemporalEvent;', 'cannot be deleted')
-        self.actor('sa_amy', "UPDATE TemporalEvent SET SessionAccount = 'forged';", 'immutable')
+                   "VALUES (7002, 'Forged', 1, NOW(), 'Insert');", 'VSM_HISTORY_WRITE_DENIED')
+        self.actor('sa_amy', 'DELETE FROM TemporalEvent;', 'VSM_HISTORY_WRITE_DENIED')
+        self.actor('sa_amy', "UPDATE TemporalEvent SET SessionAccount = 'forged';", 'VSM_HISTORY_WRITE_DENIED')
         self.actor('sa_amy', "INSERT INTO TemporalWriteContext VALUES (CONNECTION_ID(), USER(), 'Customer');", 'ERROR 1142')
         self.actor('sa_amy', "CALL sp_BeginTemporalEvent('Customer', JSON_OBJECT(), 'Insert', JSON_ARRAY(), NULL, NULL, @id, @time, @user, @context);", 'ERROR 1370')
 
     def test_unregistered_actor_with_accidental_business_grant_is_rejected(self):
         self.admin_sql("CREATE USER 'unknown_test'@'localhost' IDENTIFIED BY 'Unknown#2026'; "
                        f"GRANT INSERT ON `{self.database}`.Customer TO 'unknown_test'@'localhost';")
-        self.actor('unknown_test', "SET @app_user_id = 1; INSERT INTO Customer (CustomerID, Name) VALUES (7001, 'Forged');", 'not a registered principal')
+        self.actor('unknown_test', "SET @app_user_id = 1; INSERT INTO Customer (CustomerID, Name) VALUES (7001, 'Forged');", 'VSM_UNREGISTERED_SESSION')
         self.assertEqual(self.value('SELECT COUNT(*) FROM Customer WHERE CustomerID = 7001;'), '0')
 
     def test_maintenance_metadata_changes_have_system_attribution_not_a_forged_person(self):
@@ -257,8 +257,8 @@ class TemporalHistoryTests(support.DisposableMySQLTestCase):
         self.actor('tech_ben', 'CALL sp_ListAuditTrail(NULL, NULL, NULL, NULL, NULL, NULL, 10);', 'ERROR 1370')
         for args in ("NULL, NULL, NULL, NULL, NULL, NULL, 201", "NULL, NULL, NULL, NULL, NULL, NULL, 0",
                      "NULL, NULL, NULL, '2030-01-02', '2030-01-01', NULL, 10"):
-            self.actor('mgr_mike', f'CALL sp_ListAuditTrail({args});', 'Invalid audit page')
-        self.actor('mgr_mike', "CALL sp_ListAuditTrail('Missing', NULL, NULL, NULL, NULL, NULL, 10);", 'Unknown temporal audit entity')
+            self.actor('mgr_mike', f'CALL sp_ListAuditTrail({args});', 'VSM_INVALID_AUDIT_QUERY')
+        self.actor('mgr_mike', "CALL sp_ListAuditTrail('Missing', NULL, NULL, NULL, NULL, NULL, 10);", 'VSM_INVALID_AUDIT_QUERY')
 
     def test_upgrade_from_version_four_preserves_all_business_and_generic_audit_rows(self):
         legacy = self.database + '_old'

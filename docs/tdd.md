@@ -8,9 +8,11 @@
 | Prepared by    | Sebastian Teslic                                  |
 | Course/section | 01:198:437                                        |
 | Date           | 10/25/2026                                        |
-| Version        | 1.6                                               |
+| Version        | 1.7                                               |
 
 The detailed table specifications below describe the original business baseline. Schema versions 3 and 4 add reference metadata, verified session identities, and provenance invariants. Their current design and validation contracts are documented in [Reference values, identity, and provenance](reference-and-identity.md); the baseline specifications and historical test results are retained for traceability. Schema version 5 adds mirrored temporal history for all 12 business tables and five durable reference/security tables; see [Temporal history and audit trail](temporal-audit.md) for the current audit design and coverage matrix.
+
+Schema version 6 standardizes the deployed error contract and adds six nullable diagnostic columns to AuditLog. It preserves all earlier records, public signatures, temporal guards, trigger ordering, and native grants. [Error handling](error-handling.md) is the current specification for all 37 stable identifiers, native failure classification, caller actions, warning/retry semantics, and regression coverage. The complete disposable-server regression suite now contains 104 tests; original SQL acceptance results below remain historical baseline evidence.
 
 ## 2. Design overview
 
@@ -548,7 +550,7 @@ The bulk load in `perf_data.sql` applied 70,000 inserts and updates through the 
 
 ### Resiliency, recovery, and data integrity
 
-**Atomic operations.** `sp_CreateServiceAppointment` and `sp_CompleteRepair` run inside `START TRANSACTION ... COMMIT`. An EXIT handler rolls back and re-raises any error, so either every related insert, update, and audit row is saved or none is. Audit rows are written by triggers inside the same transaction, so they roll back with it (T-26, T-33). After the rollback, the handler writes one 'Rejected' audit row recording the failed attempt (T-48).
+**Atomic operations.** `sp_CreateServiceAppointment` and `sp_CompleteRepair` own their business transaction. Successful business writes and their temporal/generic success audit rows commit together; failures in an open owned transaction are rolled back. The handler captures the original stacked diagnostic before cleanup, attempts the existing rejection write, and uses bare `RESIGNAL`. Migration 006 distinguishes confirmed rollback, failure before its own transaction, and unknown commit/rollback outcomes. Rejection logging/cleanup failures cannot replace the original error. Durable rejection coverage and the contract for calls inside an ambient transaction remain future work; see [the limitations](error-handling.md#remaining-limitations-and-next-work).
 
 **Duplicate submissions and conflicting updates.** The booking procedure locks the technician and vehicle rows with `SELECT ... FOR UPDATE` before checking for overlapping appointments, so two simultaneous bookings for the same slot cannot both succeed. Rescheduling and reassignment take the same locks in `trg_ServiceAppointment_Schedule_Validate`, so a reschedule and a booking cannot both claim one slot either. `sp_CompleteRepair` locks the repair and every requested part before checking inventory, so two completions cannot spend the same stock. `UNIQUE(AppointmentID)` on RepairEstimate and Invoice prevents a second estimate or invoice for one appointment.
 
@@ -558,11 +560,11 @@ The bulk load in `perf_data.sql` applied 70,000 inserts and updates through the 
 
 **Cancellation and expiration.** Appointments move Scheduled → Cancelled with CancellationDate and CancellationReason, or to No Show. Repairs can be cancelled from Open or In Progress. Estimates move from Pending Approval to Rejected or Expired. Expiration is a status update made by staff; an automatic expiry job is outside the scope.
 
-**Failure and retry.** If a step fails, including a deadlock (MySQL error 1213) or lock wait timeout, the whole transaction is rolled back and the database is unchanged, so the client can safely retry. Retrying an operation that already succeeded is rejected by the state checks (for example, a repair that is already Completed) instead of creating duplicate data.
+**Failure and retry.** Native deadlocks (1213/40001) and lock timeouts (1205/HY000) retain their numbers and messages. A timeout can roll back only a statement; the public handler must confirm full rollback before a retry is eligible. Future callers may retry the entire operation at most three total attempts with bounded backoff only after confirmed rollback. Never replay unknown commit/connection outcomes automatically; reconcile first. Existing workflow checks do not provide general idempotency. Completed operations with warnings are accepted with their warning diagnostics. No production retry loop or new business-warning behavior is introduced.
 
 **Correction.** Draft records can be edited. Inventory corrections are made by a Manager with a required reason (`@adj_reason`) and are audited. Finalized invoices cannot be changed; correcting one would require a separate credit or adjustment record, which is outside the scope of this implementation.
 
-**Recovery.** InnoDB's redo log keeps committed transactions after a crash and rolls back uncommitted ones on restart. Production backups and point-in-time recovery are outside the scope; the development database can be recreated at any time from the repository with `build.sql`.
+**Recovery.** InnoDB's redo log keeps committed transactions after a crash and rolls back uncommitted ones on restart. Production backups and point-in-time recovery are outside the scope. New databases are built through `scripts/build.py`; existing databases are protected by default and upgraded with `--migrate`. Before DDL upgrades, stop writes, take a verified backup, and preserve the native routine-grant inventory. Partial/failed migrations are blocked for manual recovery; DDL cannot be undone by assuming a transaction rollback.
 
 ### Audit and traceability design
 
@@ -585,7 +587,9 @@ CALL sp_ListAuditTrail('Repair', JSON_OBJECT('RepairID', 6), NULL,
 
 ```sql
 SELECT AuditLogID, UserID, SessionAccount, Action, AffectedEntity,
-       AffectedRecordID, `Timestamp`, ContextID, NewValue
+       AffectedRecordID, `Timestamp`, ContextID, NewValue,
+       ApplicationErrorID, ErrorClass, ErrorSQLSTATE, ErrorNumber,
+       ErrorMessage, TransactionOutcome
 FROM AuditLog
 WHERE Action = 'Rejected'
 ORDER BY AuditLogID DESC;

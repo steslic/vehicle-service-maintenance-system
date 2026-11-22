@@ -206,7 +206,7 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
         self.assertEqual(self.scalar(f"SELECT migration_version FROM `{self.database}`.schema_object_versions "
                                      "WHERE object_type = 'TABLE' AND object_name = 'customer';"), "2")
         self.assertEqual(self.scalar(f"SELECT migration_version FROM `{self.database}`.schema_object_versions "
-                                     "WHERE object_type = 'PROCEDURE' AND object_name = 'sp_completerepair';"), "4")
+                                     "WHERE object_type = 'PROCEDURE' AND object_name = 'sp_completerepair';"), "6")
 
 
     def test_migrating_twice_is_a_noop(self):
