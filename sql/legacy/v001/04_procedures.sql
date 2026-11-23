@@ -1,0 +1,410 @@
+-- Vehicle Service and Maintenance Management System
+-- 04_procedures.sql
+
+USE vehicle_service_maintenance;
+
+DELIMITER //
+
+-- Procedure 1: Create service appointment
+-- Validates appointment data, vehicle ownership, technician status,
+-- and vehicle/technician scheduling conflicts (FR-02, FR-05, FR-15, FR-16, BR-04, BR-09)
+DROP PROCEDURE IF EXISTS sp_CreateServiceAppointment //
+
+CREATE PROCEDURE sp_CreateServiceAppointment(
+    IN p_CustomerID INT,
+    IN p_VehicleID INT,
+    IN p_TechnicianID INT,
+    IN p_CreatedByUserID INT,
+    IN p_AppointmentDateTime DATETIME,
+    IN p_ServiceRequestDescription VARCHAR(500),
+    IN p_EstimatedDuration INT
+)
+BEGIN
+    DECLARE v_Count INT DEFAULT 0;
+    DECLARE v_AppointmentID INT;
+    DECLARE v_EndDateTime DATETIME;
+    DECLARE v_ErrorMessage TEXT DEFAULT NULL;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        -- Save the error message for the audit log before rolling back
+        GET DIAGNOSTICS CONDITION 1 v_ErrorMessage = MESSAGE_TEXT;
+
+        -- Undo the procedure's work first, so the failure record below survives
+        ROLLBACK;
+
+        -- Failure audit: record the attempt under the logged-in user if they
+        -- have an account (so an impersonation attempt is logged as the real
+        -- caller); otherwise (root) under the user passed in
+        SET @app_user_id = COALESCE(
+            (SELECT UserID FROM UserAccount
+             WHERE Username = SUBSTRING_INDEX(USER(), '@', 1)),
+            p_CreatedByUserID);
+
+        -- An unknown user cannot be referenced by AuditLog
+        IF EXISTS (SELECT 1 FROM UserAccount WHERE UserID = @app_user_id) THEN
+            SET @context_id = COALESCE(@context_id, UUID());
+            CALL sp_WriteAuditLog('Rejected', 'ServiceAppointment', NULL, NULL,
+                JSON_OBJECT('Procedure',           'sp_CreateServiceAppointment',
+                            'Error',               v_ErrorMessage,
+                            'CustomerID',          p_CustomerID,
+                            'VehicleID',           p_VehicleID,
+                            'TechnicianID',        p_TechnicianID,
+                            'AppointmentDateTime', p_AppointmentDateTime,
+                            'EstimatedDuration',   p_EstimatedDuration));
+        END IF;
+
+        SET @app_user_id = NULL;
+        SET @context_id = NULL;
+        RESIGNAL;   -- the caller still receives the original error
+    END;
+
+    START TRANSACTION;
+
+    -- one ID shared by every audit row written by the triggers during this procedure call
+    set @context_id = UUID();
+
+    -- Validate required appointment information
+    IF p_AppointmentDateTime IS NULL
+       OR p_AppointmentDateTime <= NOW()
+       OR p_EstimatedDuration IS NULL
+       OR p_EstimatedDuration <= 0
+       OR p_EstimatedDuration > 1440 
+       OR p_ServiceRequestDescription IS NULL
+       OR TRIM(p_ServiceRequestDescription) = '' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Invalid appointment information';
+    END IF;
+
+    -- Check that the creating user exists
+    SELECT COUNT(*)
+    INTO v_Count
+    FROM UserAccount
+    WHERE UserID = p_CreatedByUserID;
+
+    IF v_Count = 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Creating user does not exist';
+    END IF;
+
+    -- Audit triggers read the acting user from this variable
+    SET @app_user_id = p_CreatedByUserID;
+
+    -- Check that the vehicle belongs to the customer (lock the vehicle row)
+    SELECT COUNT(*)
+    INTO v_Count
+    FROM Vehicle
+    WHERE VehicleID = p_VehicleID
+      AND CustomerID = p_CustomerID
+    FOR UPDATE;
+
+    IF v_Count = 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Vehicle does not belong to the customer';
+    END IF;
+
+    -- Check that the technician is active (lock the technician row so
+    -- concurrent bookings for the same technician are serialized)
+    SELECT COUNT(*)
+    INTO v_Count
+    FROM Technician
+    WHERE TechnicianID = p_TechnicianID
+      AND ActiveStatus = 1
+    FOR UPDATE;
+
+    IF v_Count = 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Technician does not exist or is inactive';
+    END IF;
+
+    SET v_EndDateTime = DATE_ADD(
+        p_AppointmentDateTime,
+        INTERVAL p_EstimatedDuration MINUTE
+    );
+
+    -- Check for overlapping active appointments for the same vehicle
+    -- (locking read so it sees the latest committed appointments)
+    SELECT COUNT(*)
+    INTO v_Count
+    FROM ServiceAppointment
+    WHERE VehicleID = p_VehicleID
+      AND Status IN ('Scheduled', 'Checked In', 'In Progress')
+      AND AppointmentDateTime < v_EndDateTime
+      AND DATE_ADD(AppointmentDateTime, INTERVAL EstimatedDuration MINUTE)
+          > p_AppointmentDateTime
+    FOR UPDATE;
+
+    IF v_Count > 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Vehicle already has a conflicting appointment';
+    END IF;
+
+    -- Check for overlapping active appointments for the technician
+    SELECT COUNT(*)
+    INTO v_Count
+    FROM ServiceAppointment
+    WHERE TechnicianID = p_TechnicianID
+      AND Status IN ('Scheduled', 'Checked In', 'In Progress')
+      AND AppointmentDateTime < v_EndDateTime
+      AND DATE_ADD(AppointmentDateTime, INTERVAL EstimatedDuration MINUTE)
+          > p_AppointmentDateTime
+    FOR UPDATE;
+
+    IF v_Count > 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Technician already has a conflicting appointment';
+    END IF;
+
+    -- Create the service appointment
+    INSERT INTO ServiceAppointment (
+        VehicleID,
+        TechnicianID,
+        CreatedByUserID,
+        AppointmentDateTime,
+        Status,
+        ServiceRequestDescription,
+        EstimatedDuration,
+        CreationTimestamp
+    )
+    VALUES (
+        p_VehicleID,
+        p_TechnicianID,
+        p_CreatedByUserID,
+        p_AppointmentDateTime,
+        'Scheduled',
+        p_ServiceRequestDescription,
+        p_EstimatedDuration,
+        NOW()
+    );
+
+    SET v_AppointmentID = LAST_INSERT_ID();
+
+    COMMIT;
+    SET @app_user_id = NULL;
+    SET @context_id = NULL;
+
+    SELECT v_AppointmentID AS AppointmentID;
+END //
+
+
+-- Procedure 2: Complete repair
+-- Records usage for zero or more parts (JSON array), reduces inventory,
+-- and completes the repair as one transaction
+-- (FR-03, FR-12, FR-13, FR-20, BR-03, BR-08, BR-10)
+--
+-- Example:
+--   CALL sp_CompleteRepair(12, 3, 5, '[{"partId": 4, "qty": 2}, {"partId": 9, "qty": 1}]');
+--   CALL sp_CompleteRepair(13, 3, 5, NULL);   -- labor-only repair
+DROP PROCEDURE IF EXISTS sp_CompleteRepair //
+
+CREATE PROCEDURE sp_CompleteRepair(
+    IN p_RepairID INT,
+    IN p_TechnicianID INT,
+    IN p_RecordedByUserID INT,
+    IN p_Parts JSON
+)
+BEGIN
+    DECLARE v_Count INT DEFAULT 0;
+    DECLARE v_PartCount INT DEFAULT 0;
+    DECLARE v_AppointmentID INT DEFAULT NULL;
+    DECLARE v_RepairStatus VARCHAR(20);
+    DECLARE v_AppointmentStatus VARCHAR(20);
+    DECLARE v_AssignedTechnicianID INT;
+    DECLARE v_ErrorMessage TEXT DEFAULT NULL;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 v_ErrorMessage = MESSAGE_TEXT;
+
+        ROLLBACK;
+        DROP TEMPORARY TABLE IF EXISTS tmp_RepairParts;
+
+        -- Failure audit: record the attempt under the logged-in user if they
+        -- have an account (so an impersonation attempt is logged as the real
+        -- caller); otherwise (root) under the user passed in
+        SET @app_user_id = COALESCE(
+            (SELECT UserID FROM UserAccount
+             WHERE Username = SUBSTRING_INDEX(USER(), '@', 1)),
+            p_RecordedByUserID);
+
+        IF EXISTS (SELECT 1 FROM UserAccount WHERE UserID = @app_user_id) THEN
+            SET @context_id = COALESCE(@context_id, UUID());
+            CALL sp_WriteAuditLog('Rejected', 'Repair', p_RepairID, NULL,
+                JSON_OBJECT('Procedure',    'sp_CompleteRepair',
+                            'Error',        v_ErrorMessage,
+                            'TechnicianID', p_TechnicianID,
+                            'Parts',        p_Parts));
+        END IF;
+
+        SET @app_user_id = NULL;
+        SET @adj_reason = NULL;
+        SET @context_id = NULL;
+        RESIGNAL; 
+    END;
+
+    START TRANSACTION;
+
+    SET @context_id = UUID();
+
+    -- Lock the repair and check that it exists
+    SELECT AppointmentID, Status
+    INTO v_AppointmentID, v_RepairStatus
+    FROM Repair
+    WHERE RepairID = p_RepairID
+    FOR UPDATE;
+
+    IF v_AppointmentID IS NULL THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Repair does not exist';
+    END IF;
+
+    -- FRD: only an In Progress repair can be completed
+    IF v_RepairStatus <> 'In Progress' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Repair must be In Progress to be completed';
+    END IF;
+
+    -- Lock the appointment and check its status and assigned technician
+    SELECT Status, TechnicianID
+    INTO v_AppointmentStatus, v_AssignedTechnicianID
+    FROM ServiceAppointment
+    WHERE AppointmentID = v_AppointmentID
+    FOR UPDATE;
+
+    IF v_AppointmentStatus IS NULL THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Appointment for this repair does not exist';
+    END IF;
+
+    -- Work can only be completed while the vehicle is in the shop: the
+    -- appointment must be In Progress (not Scheduled, Checked In, or closed)
+    IF v_AppointmentStatus <> 'In Progress' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Appointment must be In Progress to complete a repair';
+    END IF;
+
+        IF p_TechnicianID IS NULL OR NOT (v_AssignedTechnicianID <=> p_TechnicianID) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Technician is not assigned to this appointment';
+    END IF;
+
+    -- Recording user must be the assigned technician's own account, or a Manager
+    SELECT COUNT(*)
+    INTO v_Count
+    FROM UserAccount
+    WHERE UserID = p_RecordedByUserID
+      AND (RoleType = 'Manager'
+           OR (RoleType = 'Technician' AND TechnicianID = p_TechnicianID));
+
+    IF v_Count = 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Recording user is not authorized to complete this repair';
+    END IF;
+
+    -- Audit triggers read these variables
+    SET @app_user_id = p_RecordedByUserID;
+    SET @adj_reason = CONCAT('Parts usage for repair ', p_RepairID);
+
+    -- Reject any non-array JSON, including {}
+    IF p_Parts IS NOT NULL AND JSON_TYPE(p_Parts) <> 'ARRAY' THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Parts must be a JSON array';
+    END IF;
+
+    -- Record parts usage if any parts were provided
+    IF p_Parts IS NOT NULL AND JSON_LENGTH(p_Parts) > 0 THEN
+
+        -- Validate every entry BEFORE combining duplicates:
+        -- missing, null, non-numeric, zero, or negative values are rejected
+        IF EXISTS (
+            SELECT 1
+            FROM JSON_TABLE(p_Parts, '$[*]' COLUMNS (
+                     PartIDRaw JSON PATH '$.partId',
+                     QtyRaw    JSON PATH '$.qty')) AS jt
+            WHERE jt.PartIDRaw IS NULL
+               OR jt.QtyRaw IS NULL
+               OR JSON_TYPE(jt.PartIDRaw) <> 'INTEGER'
+               OR JSON_TYPE(jt.QtyRaw) <> 'INTEGER'
+               OR CAST(jt.QtyRaw AS SIGNED) <= 0
+        ) THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Each part needs an integer partId and a positive integer qty';
+        END IF;
+
+        -- All entries are valid; combine duplicate PartIDs into one row
+        DROP TEMPORARY TABLE IF EXISTS tmp_RepairParts;
+        CREATE TEMPORARY TABLE tmp_RepairParts AS
+        SELECT jt.PartID, SUM(jt.Qty) AS Qty
+        FROM JSON_TABLE(p_Parts, '$[*]' COLUMNS (
+                 PartID INT PATH '$.partId',
+                 Qty    INT PATH '$.qty')) AS jt
+        GROUP BY jt.PartID;
+
+        SELECT COUNT(*) INTO v_PartCount FROM tmp_RepairParts;
+
+        -- Lock every requested part; all must exist and be active
+        SELECT COUNT(*)
+        INTO v_Count
+        FROM Part p
+        JOIN tmp_RepairParts t ON t.PartID = p.PartID
+        WHERE p.ActiveStatus = 1
+        FOR UPDATE OF p;
+
+        IF v_Count <> v_PartCount THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'A part does not exist or is inactive';
+        END IF;
+
+        -- Check inventory for every part before changing anything
+        -- (locking read so it sees the latest committed quantities)
+        SELECT COUNT(*)
+        INTO v_Count
+        FROM Part p
+        JOIN tmp_RepairParts t ON t.PartID = p.PartID
+        WHERE p.QuantityOnHand < t.Qty
+        FOR UPDATE OF p;
+
+        IF v_Count > 0 THEN
+            SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Insufficient parts inventory';
+        END IF;
+
+        -- Record all parts, capturing the current price and cost
+        INSERT INTO PartsUsage (
+            RepairID,
+            PartID,
+            RecordedByUserID,
+            QuantityUsed,
+            UnitSellingPriceAtTimeOfUse,
+            UnitCostAtTimeOfUse,
+            RecordedDateTime
+        )
+        SELECT p_RepairID, p.PartID, p_RecordedByUserID, t.Qty,
+               p.UnitSellingPrice, p.UnitCost, NOW()
+        FROM Part p
+        JOIN tmp_RepairParts t ON t.PartID = p.PartID;
+
+        -- Reduce inventory for all parts
+        UPDATE Part p
+        JOIN tmp_RepairParts t ON t.PartID = p.PartID
+        SET p.QuantityOnHand = p.QuantityOnHand - t.Qty;
+
+        DROP TEMPORARY TABLE tmp_RepairParts;
+    END IF;
+
+    -- Mark the repair as completed
+    UPDATE Repair
+    SET Status = 'Completed',
+        CompletedByTechnicianID = p_TechnicianID,
+        CompletionDateTime = NOW()
+    WHERE RepairID = p_RepairID;
+
+    COMMIT;
+    SET @app_user_id = NULL;
+    SET @adj_reason = NULL;
+    SET @context_id = NULL;
+
+    SELECT p_RepairID AS CompletedRepairID;
+END //
+
+DELIMITER ;

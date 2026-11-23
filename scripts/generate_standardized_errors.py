@@ -11,7 +11,7 @@ import re
 from error_contract import ERRORS, identifier_for_message
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCES = ['sql/04_procedures.sql', 'sql/05_triggers_roles.sql',
+SOURCES = ['sql/legacy/v001/04_procedures.sql', 'sql/legacy/v001/05_triggers_roles.sql',
            'sql/migrations/003_indicator_values.sql', 'sql/migrations/004_session_identity_and_provenance.sql',
            'sql/migrations/005_temporal_history.sql']
 SIGNAL = re.compile(r"SIGNAL\s+SQLSTATE\s+'45000'\s+SET\s+MESSAGE_TEXT\s*=\s*([^;]+);")

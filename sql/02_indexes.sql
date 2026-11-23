@@ -1,29 +1,139 @@
--- Vehicle Service and Maintenance Management System
--- 02_indexes.sql
--- Creates indexes for improved query performance
-
+-- Final secondary indexes, including constraint-supporting keys.
 USE vehicle_service_maintenance;
 
--- Appointment lookup by date/time
-CREATE INDEX idx_ServiceAppointment_DateTime
-ON ServiceAppointment (AppointmentDateTime);
-
--- Technician scheduling and workload
-CREATE INDEX idx_ServiceAppointment_Technician_DateTime
-ON ServiceAppointment (TechnicianID, AppointmentDateTime);
-
--- Vehicle appointment conflict checks
-CREATE INDEX idx_ServiceAppointment_Vehicle_DateTime
-ON ServiceAppointment (VehicleID, AppointmentDateTime);
-
--- Audit history lookup
-CREATE INDEX idx_AuditLog_Entity_Record
-ON AuditLog (AffectedEntity, AffectedRecordID, `Timestamp`);
-
--- Helps find completed repairs grouped by repair type 
-CREATE INDEX idx_Repair_Status_Type
-ON Repair (`Status`, RepairType);
-
--- Find every audit row written by one procedure call
-CREATE INDEX idx_AuditLog_Context
-ON AuditLog (ContextID);
+ALTER TABLE `AuditLog` ADD KEY `UserID` (`UserID`);
+ALTER TABLE `AuditLog` ADD KEY `idx_AuditLog_Entity_Record` (`AffectedEntity`,`AffectedRecordID`,`Timestamp`);
+ALTER TABLE `AuditLog` ADD KEY `idx_AuditLog_Context` (`ContextID`);
+ALTER TABLE `AuditLog` ADD KEY `fk_AuditLog_ActionIndicator` (`ActionIndicator`,`Action`);
+ALTER TABLE `AuditLog` ADD KEY `fk_AuditLog_EntityIndicator` (`EntityIndicator`,`AffectedEntity`);
+ALTER TABLE `Customer` ADD KEY `idx_Customer_Name` (`Name`);
+ALTER TABLE `CustomerHistory` ADD UNIQUE KEY `uq_RecordVersion` (`CustomerID`,`HistoryVersion`);
+ALTER TABLE `CustomerHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `CustomerHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `CustomerHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`CustomerID`,`HistoryIsCurrent`);
+ALTER TABLE `CustomerHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `DatabasePrincipal` ADD KEY `TypeIndicator` (`TypeIndicator`,`PrincipalType`);
+ALTER TABLE `DatabasePrincipal` ADD KEY `UserID` (`UserID`);
+ALTER TABLE `DatabasePrincipalHistory` ADD UNIQUE KEY `uq_RecordVersion` (`SessionAccount`,`HistoryVersion`);
+ALTER TABLE `DatabasePrincipalHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `DatabasePrincipalHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `DatabasePrincipalHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`SessionAccount`,`HistoryIsCurrent`);
+ALTER TABLE `DatabasePrincipalHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `EstimateLineItemHistory` ADD UNIQUE KEY `uq_RecordVersion` (`EstimateID`,`LineNumber`,`HistoryVersion`);
+ALTER TABLE `EstimateLineItemHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `EstimateLineItemHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `EstimateLineItemHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`EstimateID`,`LineNumber`,`HistoryIsCurrent`);
+ALTER TABLE `EstimateLineItemHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `IndicatorValueHistory` ADD UNIQUE KEY `uq_RecordVersion` (`IndicatorName`,`ValueCode`,`HistoryVersion`);
+ALTER TABLE `IndicatorValueHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `IndicatorValueHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `IndicatorValueHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`IndicatorName`,`ValueCode`,`HistoryIsCurrent`);
+ALTER TABLE `IndicatorValueHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `Invoice` ADD UNIQUE KEY `AppointmentID` (`AppointmentID`);
+ALTER TABLE `Invoice` ADD KEY `CreatedByUserID` (`CreatedByUserID`);
+ALTER TABLE `Invoice` ADD KEY `FinalizedByUserID` (`FinalizedByUserID`);
+ALTER TABLE `Invoice` ADD KEY `fk_Invoice_StatusIndicator` (`StatusIndicator`,`Status`);
+ALTER TABLE `InvoiceHistory` ADD UNIQUE KEY `uq_RecordVersion` (`InvoiceID`,`HistoryVersion`);
+ALTER TABLE `InvoiceHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `InvoiceHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `InvoiceHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`InvoiceID`,`HistoryIsCurrent`);
+ALTER TABLE `InvoiceHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `InvoiceLineItem` ADD KEY `InvoiceID` (`InvoiceID`);
+ALTER TABLE `InvoiceLineItemHistory` ADD UNIQUE KEY `uq_RecordVersion` (`InvoiceLineItemID`,`HistoryVersion`);
+ALTER TABLE `InvoiceLineItemHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `InvoiceLineItemHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `InvoiceLineItemHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`InvoiceLineItemID`,`HistoryIsCurrent`);
+ALTER TABLE `InvoiceLineItemHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `OperationContext` ADD KEY `SessionAccount` (`SessionAccount`);
+ALTER TABLE `OperationContext` ADD KEY `UserID` (`UserID`);
+ALTER TABLE `Part` ADD UNIQUE KEY `PartNumber` (`PartNumber`);
+ALTER TABLE `Part` ADD KEY `fk_Part_ActiveIndicator` (`ActiveIndicator`,`ActiveCode`);
+ALTER TABLE `PartHistory` ADD UNIQUE KEY `uq_RecordVersion` (`PartID`,`HistoryVersion`);
+ALTER TABLE `PartHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `PartHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `PartHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`PartID`,`HistoryIsCurrent`);
+ALTER TABLE `PartHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `PartsUsage` ADD KEY `RepairID` (`RepairID`);
+ALTER TABLE `PartsUsage` ADD KEY `PartID` (`PartID`);
+ALTER TABLE `PartsUsage` ADD KEY `RecordedByUserID` (`RecordedByUserID`);
+ALTER TABLE `PartsUsageHistory` ADD UNIQUE KEY `uq_RecordVersion` (`PartsUsageID`,`HistoryVersion`);
+ALTER TABLE `PartsUsageHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `PartsUsageHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `PartsUsageHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`PartsUsageID`,`HistoryIsCurrent`);
+ALTER TABLE `PartsUsageHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `PrincipalDelegation` ADD KEY `UserID` (`UserID`);
+ALTER TABLE `PrincipalDelegation` ADD KEY `ProcedureIndicator` (`ProcedureIndicator`,`ProcedureName`);
+ALTER TABLE `PrincipalDelegationHistory` ADD UNIQUE KEY `uq_RecordVersion` (`SessionAccount`,`UserID`,`ProcedureName`,`HistoryVersion`);
+ALTER TABLE `PrincipalDelegationHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `PrincipalDelegationHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `PrincipalDelegationHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`SessionAccount`,`UserID`,`ProcedureName`,`HistoryIsCurrent`);
+ALTER TABLE `PrincipalDelegationHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `Repair` ADD KEY `AppointmentID` (`AppointmentID`);
+ALTER TABLE `Repair` ADD KEY `CompletedByTechnicianID` (`CompletedByTechnicianID`);
+ALTER TABLE `Repair` ADD KEY `idx_Repair_Status_Type` (`Status`,`RepairType`);
+ALTER TABLE `Repair` ADD KEY `fk_Repair_StatusIndicator` (`StatusIndicator`,`Status`);
+ALTER TABLE `Repair` ADD KEY `fk_Repair_TypeIndicator` (`TypeIndicator`,`RepairType`);
+ALTER TABLE `RepairEstimate` ADD UNIQUE KEY `AppointmentID` (`AppointmentID`);
+ALTER TABLE `RepairEstimate` ADD KEY `CreatedByUserID` (`CreatedByUserID`);
+ALTER TABLE `RepairEstimate` ADD KEY `ApprovedByUserID` (`ApprovedByUserID`);
+ALTER TABLE `RepairEstimate` ADD KEY `fk_RepairEstimate_StatusIndicator` (`StatusIndicator`,`Status`);
+ALTER TABLE `RepairEstimateHistory` ADD UNIQUE KEY `uq_RecordVersion` (`EstimateID`,`HistoryVersion`);
+ALTER TABLE `RepairEstimateHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `RepairEstimateHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `RepairEstimateHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`EstimateID`,`HistoryIsCurrent`);
+ALTER TABLE `RepairEstimateHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `RepairHistory` ADD UNIQUE KEY `uq_RecordVersion` (`RepairID`,`HistoryVersion`);
+ALTER TABLE `RepairHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `RepairHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `RepairHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`RepairID`,`HistoryIsCurrent`);
+ALTER TABLE `RepairHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `RoleProcedurePermission` ADD KEY `RoleIndicator` (`RoleIndicator`,`RoleType`);
+ALTER TABLE `RoleProcedurePermission` ADD KEY `ProcedureIndicator` (`ProcedureIndicator`,`ProcedureName`);
+ALTER TABLE `RoleProcedurePermissionHistory` ADD UNIQUE KEY `uq_RecordVersion` (`RoleType`,`ProcedureName`,`HistoryVersion`);
+ALTER TABLE `RoleProcedurePermissionHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `RoleProcedurePermissionHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `RoleProcedurePermissionHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`RoleType`,`ProcedureName`,`HistoryIsCurrent`);
+ALTER TABLE `RoleProcedurePermissionHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `ServiceAppointment` ADD KEY `CreatedByUserID` (`CreatedByUserID`);
+ALTER TABLE `ServiceAppointment` ADD KEY `idx_ServiceAppointment_DateTime` (`AppointmentDateTime`);
+ALTER TABLE `ServiceAppointment` ADD KEY `idx_ServiceAppointment_Technician_DateTime` (`TechnicianID`,`AppointmentDateTime`);
+ALTER TABLE `ServiceAppointment` ADD KEY `idx_ServiceAppointment_Vehicle_DateTime` (`VehicleID`,`AppointmentDateTime`);
+ALTER TABLE `ServiceAppointment` ADD KEY `fk_ServiceAppointment_StatusIndicator` (`StatusIndicator`,`Status`);
+ALTER TABLE `ServiceAppointmentHistory` ADD UNIQUE KEY `uq_RecordVersion` (`AppointmentID`,`HistoryVersion`);
+ALTER TABLE `ServiceAppointmentHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `ServiceAppointmentHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `ServiceAppointmentHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`AppointmentID`,`HistoryIsCurrent`);
+ALTER TABLE `ServiceAppointmentHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `Technician` ADD UNIQUE KEY `Email` (`Email`);
+ALTER TABLE `Technician` ADD KEY `fk_Technician_ActiveIndicator` (`ActiveIndicator`,`ActiveCode`);
+ALTER TABLE `TechnicianHistory` ADD UNIQUE KEY `uq_RecordVersion` (`TechnicianID`,`HistoryVersion`);
+ALTER TABLE `TechnicianHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `TechnicianHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `TechnicianHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`TechnicianID`,`HistoryIsCurrent`);
+ALTER TABLE `TechnicianHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `TemporalEvent` ADD KEY `idx_TemporalEvent_EntityRecord` (`EntityType`,`RecordHash`,`EventID`);
+ALTER TABLE `TemporalEvent` ADD KEY `idx_TemporalEvent_Entity` (`EntityType`,`EventID`);
+ALTER TABLE `TemporalEvent` ADD KEY `idx_TemporalEvent_Actor` (`ResponsibleUserID`,`EventID`);
+ALTER TABLE `TemporalEvent` ADD KEY `idx_TemporalEvent_Time` (`EventTimestamp`,`EventID`);
+ALTER TABLE `UserAccount` ADD UNIQUE KEY `Username` (`Username`);
+ALTER TABLE `UserAccount` ADD UNIQUE KEY `TechnicianID` (`TechnicianID`);
+ALTER TABLE `UserAccount` ADD KEY `fk_UserAccount_RoleIndicator` (`RoleIndicator`,`RoleType`);
+ALTER TABLE `UserAccount` ADD KEY `fk_UserAccount_RolePolicy` (`RoleType`);
+ALTER TABLE `UserAccountHistory` ADD UNIQUE KEY `uq_RecordVersion` (`UserID`,`HistoryVersion`);
+ALTER TABLE `UserAccountHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `UserAccountHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `UserAccountHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`UserID`,`HistoryIsCurrent`);
+ALTER TABLE `UserAccountHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `UserRolePolicy` ADD KEY `RoleIndicator` (`RoleIndicator`,`RoleType`);
+ALTER TABLE `UserRolePolicyHistory` ADD UNIQUE KEY `uq_RecordVersion` (`RoleType`,`HistoryVersion`);
+ALTER TABLE `UserRolePolicyHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `UserRolePolicyHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `UserRolePolicyHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`RoleType`,`HistoryIsCurrent`);
+ALTER TABLE `UserRolePolicyHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);
+ALTER TABLE `Vehicle` ADD UNIQUE KEY `VIN` (`VIN`);
+ALTER TABLE `Vehicle` ADD KEY `CustomerID` (`CustomerID`);
+ALTER TABLE `VehicleHistory` ADD UNIQUE KEY `uq_RecordVersion` (`VehicleID`,`HistoryVersion`);
+ALTER TABLE `VehicleHistory` ADD UNIQUE KEY `HistoryStartEventID` (`HistoryStartEventID`);
+ALTER TABLE `VehicleHistory` ADD UNIQUE KEY `HistoryEndEventID` (`HistoryEndEventID`);
+ALTER TABLE `VehicleHistory` ADD UNIQUE KEY `uq_CurrentVersion` (`VehicleID`,`HistoryIsCurrent`);
+ALTER TABLE `VehicleHistory` ADD KEY `idx_Validity` (`HistoryValidFrom`,`HistoryValidTo`);

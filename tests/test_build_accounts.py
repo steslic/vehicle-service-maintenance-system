@@ -9,6 +9,8 @@ import mysql_test_support as support
 
 class BuildAccountTests(support.DisposableMySQLTestCase):
     legacy_routine_inspection = True
+    # These assertions include migration-specific temporary authority and old SQL counts.
+    build_profile = 'legacy'
 
     def remove_demo_accounts(self):
         self.admin_sql("DROP USER IF EXISTS 'sa_amy'@'localhost', 'tech_ben'@'localhost', 'mgr_mike'@'localhost'; "
