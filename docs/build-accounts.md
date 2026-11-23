@@ -2,12 +2,22 @@
 
 `scripts/build.py` remains the single build/migration entry point, and `sql/build.sql` remains its ordered manifest. `scripts/accounts.py` is an explicit provisioning utility; it does not build or migrate business schemas. No provisioning runs against the installed project server in automated tests.
 
+## Fresh installations and historical upgrades
+
+Normal fresh installations use the consolidated SQL files [01_schema.sql](../sql/01_schema.sql) through [08_demo_accounts.sql](../sql/08_demo_accounts.sql). The runner creates tables and indexes, installs routines and views, imports the fictional fixture and initial history snapshots, installs triggers, optionally provisions demo accounts, and runs current-schema assertions. The manifest's execution phases are documented in [SQL consolidation](sql-consolidation.md); the numeric filenames alone are not an instruction to source the files sequentially.
+
+Migrations 001–006 are historical upgrade and compatibility resources. A normal fresh version-006 installation does not read or execute their SQL. Instead, it verifies `sql/consolidated/006_baseline.json` and records those versions as `covered`, with NULL `applied_at` and explicit baseline checksum/version/coverage time. Each tracked object retains its recorded last-change version. Only later pending migrations are executed after that baseline.
+
+Existing databases use `--migrate`: the runner verifies historical filenames, checksums, statuses, and deployed object definitions, then executes only pending migrations. It never reloads fixtures, reprovisions demo accounts, or rebuilds existing temporal snapshots. `--build-profile legacy` reproduces the old build from frozen files in `sql/legacy/v001/`; fresh targets below version 006 select that profile automatically. Existing historical migration rows and metadata layouts are preserved.
+
+Keep migrations 001–006, `sql/migrations/baseline.json`, and `sql/09_schema_migrations.sql` unchanged. Migration 001 binds the last two files by checksum; its original baseline verification remains available through `--migrate --baseline` for a matching unversioned version-001 schema. That option does not adopt an arbitrary unversioned version-006 database. Failed/interrupted history blocks automatic replay and requires inspection and manual recovery.
+
 ## Responsibilities and privileges
 
 | Account | Responsibility | Assigned privileges |
 | --- | --- | --- |
-| `vsm_developer@localhost` | Schema creation/reset, schema migrations, sample/test data, SQL assertions, schema fingerprints, migration-history updates | On each explicitly approved schema: SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, REFERENCES, INDEX, ALTER, CREATE TEMPORARY TABLES, EXECUTE, CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, TRIGGER. No permanent GRANT OPTION. |
-| `vsm_admin@localhost` | Create/manage accounts and roles, assign scoped privileges, optional demo provisioning, temporary legacy routine grant authority | CREATE USER and ROLE_ADMIN globally; the same schema privileges WITH GRANT OPTION on approved schemas. Only the metadata column reads listed below. Optional SHOW_ROUTINE for legacy-definer inspection. The private test harness additionally grants SYSTEM_VARIABLES_ADMIN solely for environment-preflight tests. |
+| `vsm_developer@localhost` | Consolidated schema/fixture/assertion work, schema creation/reset, historical migrations, schema fingerprints, baseline coverage and object-version/history writes; serves as definer for created routines, views, and triggers | On each explicitly approved schema: SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, REFERENCES, INDEX, ALTER, CREATE TEMPORARY TABLES, EXECUTE, CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, TRIGGER. No permanent GRANT OPTION; consolidated builds require no temporary grant authority. |
+| `vsm_admin@localhost` | Explicit account/role provisioning, optional demo provisioning, conditional reader grants for existing qualified roles, temporary historical routine grant authority, and approved legacy metadata inspection | CREATE USER and ROLE_ADMIN globally; the same schema privileges WITH GRANT OPTION on approved schemas. Only the metadata column reads listed below. Optional SHOW_ROUTINE for legacy-definer inspection. The private test harness additionally grants SYSTEM_VARIABLES_ADMIN solely for environment-preflight tests. |
 | Named business users and application services | Ordinary application operations | Existing restricted role/view/procedure grants, unchanged. Services remain EXECUTE-only in the reference/identity examples. |
 | Root | Initial provisioning of `vsm_admin` on a newly initialized private server | Used only by the explicit bootstrap utility path or test-server startup. The harness locks root at the end of that initial connection. |
 
@@ -17,12 +27,12 @@ MySQL account/role administration is inherently server-scoped. `vsm_admin` is tr
 
 ## Required privilege-metadata reads
 
-The unchanged baseline test and migrations require these SELECT columns:
+The current installer and retained historical acceptance tests/migrations use these existing SELECT column grants:
 
-- `mysql.tables_priv`: User, Host, Db, Table_name (baseline role/view check and migration 003 reference-reader recipients).
-- `mysql.procs_priv`: User, Host, Db, Routine_name, Proc_priv (migrations 004 and 006 capture and restore existing native routine grants).
+- `mysql.tables_priv`: User, Host, Db, Table_name (conditional recipient selection in consolidated builds, the historical role/view check, and historical reference/audit-reader qualification).
+- `mysql.procs_priv`: User, Host, Db, Routine_name, Proc_priv (historical migrations and their runner capture and restore existing native routine grants).
 
-Both accounts receive only these columns. The admin can delegate those column reads when provisioning the developer. The admin additionally reads `mysql.user(User, Host)` to detect demo-account collisions; the developer has no mysql.user read access. These legacy queries necessarily expose grant-recipient metadata across the server, not business data or credential hashes. No broad `SELECT ON mysql.*` is granted to make arbitrary `SHOW GRANTS FOR other_account` commands work. Named users can inspect their own grants. See [MySQL GRANT semantics](https://dev.mysql.com/doc/refman/8.0/en/grant.html).
+Both accounts receive only these columns on those two tables. The admin can delegate those column reads when provisioning the developer. The admin additionally reads `mysql.user(User, Host)` to detect demo-account collisions; the developer has no mysql.user read access. These queries necessarily expose grant-recipient metadata across the server, not business data or credential hashes; fresh-build recipient selection filters the exact target database. No broad `SELECT ON mysql.*` is granted to make arbitrary `SHOW GRANTS FOR other_account` commands work. Named users can inspect their own grants. See [MySQL GRANT semantics](https://dev.mysql.com/doc/refman/8.0/en/grant.html).
 
 ## Provision a chosen disposable server
 
@@ -43,8 +53,8 @@ python3 scripts/accounts.py --mysql /usr/local/mysql/bin/mysql \
 python3 scripts/accounts.py --mysql /usr/local/mysql/bin/mysql \
     --socket "$DEV_SOCKET" --database vsm_dev_example --create-developer
 
-# Routine build: schema/data/tests/migrations execute as vsm_developer.
-# A separate admin connection services only the immutable routine-GRANT helpers.
+# Fresh build: consolidated 01–08 schema/fixture/assertion work runs as vsm_developer.
+# Admin is opened only if existing target-scoped roles qualify for reader grants.
 python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql \
     --socket "$DEV_SOCKET" --database vsm_dev_example -p --admin-password
 
@@ -57,11 +67,30 @@ Existing account names are refused when creating an account; no password or gran
 
 The default build identity is `vsm_developer`, the default administrative identity is `vsm_admin`. Explicit root identities are rejected by the build parser, and the connected authenticated identity is checked too. There is no fallback account. Use `-p` and `--admin-password` for separate prompts. For automation, `MYSQL_PWD` is the developer password and `VSM_ADMIN_PASSWORD` is the admin password; the latter is removed from developer client environments and the developer password is never reused for admin authentication. Passwords are not logged or passed on command lines.
 
-Baseline builds through version 2 without demo accounts, ordinary additive migrations without privilege statements, and already-current migrations do not open an admin connection when the developer owns the routine definitions. Legacy-definer metadata verification may need admin read access as described below. `--with-demo-accounts` runs only manifest file 08 as admin, after collision checks and before the original SQL tests. All other build files and migration/history operations run as developer. Logs identify the actual session and authenticated account, admin operations, and temporary grant cleanup.
+## Optional demo provisioning and existing-role grants
 
-Migration 005 adds a separate admin-only grant step after its developer-owned temporal DDL: SELECT on `vw_AuditTrail` and EXECUTE on `sp_ListAuditTrail` go only to an existing `role_manager` already granted access to `AuditLog` in that database. A basic grant on another table is insufficient. This step uses the admin's existing scoped grant privileges, adds no temporary or permanent developer grant authority, and never grants history/event/context DML to application roles. The internal writer has no application EXECUTE grant. See [temporal history](temporal-audit.md) for the history guards and explicit system-only attribution for physical maintenance accounts.
+Normal fresh builds create no native application roles or demo users. Seeded `UserRolePolicy`, `RoleProcedurePermission`, and `DatabasePrincipal` rows are application authorization metadata; they do not create MySQL principals or native grants.
+
+`--with-demo-accounts` opts into [08_demo_accounts.sql](../sql/08_demo_accounts.sql), executed as admin. It creates the three standard roles, their complete current grants, the three fictional logins, role assignments, and default roles. Collision checks reject any existing demo role/user name before creating or resetting the database; the script never drops/reuses those principals or changes their passwords. File 08 includes the final reference-reader and manager audit-reader grants directly. Full role/demo provisioning remains optional.
+
+Consolidated builds without demo accounts or qualified existing target-schema roles, legacy builds through version 2 without demo accounts, ordinary additive migrations without privilege statements, and already-current migrations do not open an admin connection when the developer owns the routine definitions. Legacy-definer metadata verification may need admin read access as described below. All schema SQL, including file 05's triggers, runs as developer; granting readers through the admin connection never changes object definers. Logs identify the actual session and authenticated account, admin operations, and historical temporary-grant cleanup.
+
+Without demo provisioning, a consolidated fresh build reproduces the original conditional grants for principals that already exist. It inspects the developer's permitted `mysql.tables_priv` columns and preserves each qualifying User/Host pair:
+
+| Existing principal | Required target-database privilege metadata | Conditional grant |
+| --- | --- | --- |
+| `role_service_advisor`, `role_technician`, or `role_manager` | Any table grant on the exact target schema | EXECUTE on `sp_ListIndicatorValues` |
+| `role_manager` | A table grant on that schema's `AuditLog` | SELECT on `vw_AuditTrail` and EXECUTE on `sp_ListAuditTrail` |
+
+Same-named roles authorized only elsewhere receive nothing. A manager's grant on another target table qualifies only for the indicator reader; access to AuditLog in a different database does not qualify it for the target's audit readers. These grants do not install the complete role policy or create accounts, reset credentials, or assign roles to users.
+
+The separate admin authenticates before any creation/reset and executes only the qualifying GRANT statements after the objects exist, before baseline coverage is finalized. No temporary developer grant authority or trigger-definer changes are involved. Grant failure leaves the baseline incomplete rather than marking it covered. With no qualifying recipients, the default fresh build needs no admin connection.
+
+Historical builds/upgrades retain migration 003's reference-reader helper and the separate migration-005 admin grant step for the qualified manager audit readers. That audit step never grants history/event/context DML to application roles, and the internal writer has no application EXECUTE grant. See [temporal history](temporal-audit.md) for the history guards and explicit system-only attribution for physical maintenance accounts.
 
 ## Immutable migration exceptions
+
+These exceptions apply only to historical builds and upgrades. Fresh consolidated builds create routines once and require no temporary developer grant authority. [SQL consolidation](sql-consolidation.md) describes baseline coverage and the comparison evidence.
 
 Migration 003 calls `sp_GrantReferenceReaders`; migration 004 calls `sp_RestorePublicRoutineGrants`; migration 006 calls `sp_RestoreErrorRoutineGrants`. They execute with the developer definer's privileges, and migrations 004 and 006 rely on temporary grant-snapshot tables in that same connection. Moving the entire migration to an admin session would change its owner and violate the account boundary; granting schema-level GRANT OPTION would allow delegation of every held schema privilege.
 
@@ -80,7 +109,7 @@ REVOKE GRANT OPTION ON PROCEDURE vsm_dev_example.sp_CompleteRepair
 FROM 'vsm_developer'@'localhost';
 ```
 
-Do not erase failed history/checksums or grant blanket privileges to get past a failure. Admin authentication is checked before fresh-build DDL or starting a migration that needs these exceptions.
+Do not erase failed history/checksums or grant blanket privileges to get past a failure. Admin authentication is checked before historical fresh-build DDL or starting a migration that needs these exceptions. Consolidated fresh builds instead use the optional-provisioning and conditional-grant paths described above.
 
 Before migrations that recreate routines, retain a native routine-grant inventory as well as the database backup. Dropping a routine removes its routine-level grants; the in-session temporary snapshot cannot recover them after connection loss. Manual recovery must restore those original grants separately after restoring the schema. See [error-handling.md](error-handling.md) for migration 006 precautions.
 
@@ -100,4 +129,4 @@ The startup bootstrap and explicit `accounts.py --bootstrap-admin` path are the 
 python3 -B -m unittest discover -s tests -v
 ```
 
-All servers, accounts, credentials, database scopes, and test data are disposable. Existing restricted-user authorization tests remain. Added checks cover real developer builds/migrations and object definers, exact schema boundaries, denied account and privilege operations, limited metadata visibility, no fallback on invalid credentials, admin-only provisioning, preservation of routine grants and business data, temporary-authority cleanup on failure, and binary-logging preflight. No test uses the installed project's server.
+All servers, accounts, credentials, database scopes, and test data are disposable. Existing restricted-user authorization tests remain. Checks cover consolidated and historical builds, developer-owned object definers, exact schema boundaries, denied account and privilege operations, limited metadata visibility, no fallback on invalid credentials, admin-only provisioning, preservation of routine grants and business data, historical temporary-authority cleanup, and binary-logging preflight. Cross-path tests compare the tagged implementation with consolidated builds, including qualified existing roles, unrelated same-named roles, manager-specific scope, collisions, bad credentials before reset, and grant failures before coverage. No test uses the installed project's server.

@@ -1,17 +1,19 @@
 -- Vehicle Service and Maintenance Management System
 -- Ordered input list for scripts/build.py. The runner validates and inlines
 -- these files so SOURCE cannot hide an error or a missing file.
--- Demo provisioning is optional and runs before the existing test suite.
+-- Fresh builds use only 01–08 plus the independent consolidated baseline contract.
+-- The runner phases schema/index/foreign-key creation; metadata is created by 01.
+-- Entries below 001–006 are a historical registry, not fresh-build operations.
 
 SIGNAL SQLSTATE '45000'
 SET MESSAGE_TEXT = 'Use python3 scripts/build.py; direct SOURCE builds are disabled';
 
 SOURCE 01_schema.sql
 SOURCE 02_indexes.sql
-SOURCE 03_views_reports.sql
 SOURCE 04_procedures.sql
-SOURCE 05_triggers_roles.sql
+SOURCE 03_views_reports.sql
 SOURCE 06_sample_data.sql
+SOURCE 05_triggers_roles.sql
 SOURCE 08_demo_accounts.sql
 SOURCE 07_tests.sql
 

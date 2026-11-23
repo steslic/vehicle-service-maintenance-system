@@ -25,7 +25,7 @@ Statistics are refreshed with `ANALYZE TABLE` before each measurement. MySQL 26.
 
 ## How to Reproduce
 
-The captured outputs below are historical measurements from a sample-only build. Reproduce this historical loader at schema version 2 using the schema-scoped `vsm_developer` setup account: it asserts human identities, which current session-identity validation correctly rejects. Provision that exact schema using [account setup](../build-accounts.md). New performance loaders must use registered actors. The canonical build also runs the database tests and installs migration metadata, so new row counts and timings can differ. Keep new output separate from that historical evidence.
+The captured outputs below are historical measurements from a sample-only build. Reproduce this historical loader using the archived legacy profile at schema version 2 using the schema-scoped `vsm_developer` setup account: it asserts human identities, which current session-identity validation correctly rejects. Provision that exact schema using [account setup](../build-accounts.md). New performance loaders must use registered actors. The canonical build also runs the database tests and installs migration metadata, so new row counts and timings can differ. Keep new output separate from that historical evidence.
 
 These performance SQL files target `vehicle_service_maintenance` explicitly. Run them only on a **separate disposable MySQL server**, using its explicit Unix socket for every command. Do not point them at the installed project server. From the repository root:
 

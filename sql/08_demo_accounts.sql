@@ -96,3 +96,9 @@ GRANT 'role_manager'         TO 'mgr_mike'@'localhost';
 SET DEFAULT ROLE 'role_service_advisor' TO 'sa_amy'@'localhost';
 SET DEFAULT ROLE 'role_technician'      TO 'tech_ben'@'localhost';
 SET DEFAULT ROLE 'role_manager'         TO 'mgr_mike'@'localhost';
+
+GRANT EXECUTE ON PROCEDURE vehicle_service_maintenance.sp_ListIndicatorValues TO 'role_service_advisor';
+GRANT EXECUTE ON PROCEDURE vehicle_service_maintenance.sp_ListIndicatorValues TO 'role_technician';
+GRANT EXECUTE ON PROCEDURE vehicle_service_maintenance.sp_ListIndicatorValues TO 'role_manager';
+GRANT SELECT ON vehicle_service_maintenance.vw_AuditTrail TO 'role_manager';
+GRANT EXECUTE ON PROCEDURE vehicle_service_maintenance.sp_ListAuditTrail TO 'role_manager';

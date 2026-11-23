@@ -1,6 +1,8 @@
 # Vehicle Service and Maintenance Management System
 
-A MySQL database for an auto repair shop. It tracks customers, vehicles, service appointments, repairs, parts inventory, repair estimates, and invoices. Business rules are enforced inside the database through constraints, stored procedures, triggers, and role-based privileges, and every important change is written to an append-only audit log.
+A MySQL database for an auto repair shop. It tracks customers, vehicles, service appointments, repairs, parts inventory, repair estimates, and invoices. Business rules are enforced through constraints, stored procedures, triggers, and role-based privileges. Successful business and durable policy changes have protected temporal history; the separate append-only `AuditLog` retains operational events and attempted rejection diagnostics. See [audit coverage and limits](docs/temporal-audit.md).
+
+Fresh installations use the consolidated version-006 definitions in SQL files 01–08. Historical migrations 001–006 remain upgrade and compatibility resources, with their original checksums preserved.
 
 Rutgers University, 01:198:437 Database Systems, Fall 2026.
 
@@ -12,8 +14,12 @@ docs/
   tdd.md                   Technical Design Document
   FRD.md                   Functional Requirements Document
   build-accounts.md        Detailed account privileges and provisioning reference
+  reference-and-identity.md  Indicator values, session identity, delegation, and provenance
+  sql-consolidation.md     Consolidated baseline, historical paths, and equivalence evidence
   temporal-audit.md        Temporal history, audit reader, and coverage reference
   error-handling.md        Stable error codes, diagnostics, and caller/retry contract
+  instructor_feedback_response.md  Requirements/design changes responding to feedback
+  Midterm Follow-up Questions.pdf  Supporting course questions
   vehicle-service-erd.drawio  Data model / ER diagram (draw.io)
   vehicle-service-erd.svg  Data model / ER diagram (svg)
   erd.md                   ER diagram explanation
@@ -23,11 +29,12 @@ sql/
   01_schema.sql            Database, tables, keys, CHECK constraints
   02_indexes.sql           Secondary indexes
   03_views_reports.sql     Views and report queries (RQ-01 to RQ-06)
-  04_procedures.sql        sp_CreateServiceAppointment, sp_CompleteRepair
-  05_triggers_roles.sql    Audit and validation triggers
-  06_sample_data.sql       Sample data
-  07_tests.sql             Automated test suite
+  04_procedures.sql        Business, identity, temporal, and diagnostic routines/functions
+  05_triggers_roles.sql    Current validation, identity, audit, and history triggers
+  06_sample_data.sql       Consolidated fictional fixture and observed history snapshots
+  07_tests.sql             Read-only business/fixture assertions and failure gate
   08_demo_accounts.sql     Optional demo roles and accounts
+  demo.sql                 Historical workflow demonstration; not a build input
 scripts/build.py           Safe, fail-fast build runner
 scripts/database.py        MySQL session, preflight checks, and timestamped logging
 scripts/migrate.py         Ordered migration and schema verification helpers
@@ -35,13 +42,17 @@ scripts/accounts.py        Explicit bootstrap and administrator account provisio
 scripts/generate_temporal_history.py  Development-only generator for frozen migration 005
 scripts/error_contract.py   Explicit error identifiers and offline migration mapping
 scripts/generate_standardized_errors.py  Development-only recipe for migration 006
-sql/09_schema_migrations.sql  Migration history table
-sql/migrations/            Baseline and ordered upgrades through reference/identity metadata
+sql/09_schema_migrations.sql  Historical migration metadata DDL (fresh metadata is in 01)
+sql/migrations/            Immutable historical baseline and ordered upgrades
+sql/legacy/v001/           Frozen original 01–08 files for historical builds
+sql/consolidated/006_baseline.json  Independent version-006 reference contract
+scripts/consolidated_baseline.py  Verified installation and explicit coverage bookkeeping
 tests/test_build.py        Build and migration regression tests
 tests/test_build_accounts.py  Developer/admin separation and denied-operation tests
 tests/test_reference_identity.py  Reference, actor, and provenance regressions
 tests/test_temporal_history.py  Temporal versions, audit coverage, and pagination regressions
 tests/test_error_handling.py  Error contracts, native failures, and upgrade regressions
+tests/test_consolidated_build.py  Tagged schema/security/data/upgrade comparisons
 tests/mysql_test_support.py  Shared private disposable MySQL server harness
 ```
 
@@ -49,20 +60,22 @@ tests/mysql_test_support.py  Shared private disposable MySQL server harness
 
 | Requirement               | Version / Notes                                                                                 |
 | ------------------------- | ----------------------------------------------------------------------------------------------- |
-| MySQL Server              | MySQL 8.0.18 or later; tested on MySQL Community Server 26.7.0. |
-| MySQL command-line client | MySQL 8.0.18 or later, with a successful connection to the selected server; MariaDB is refused. On macOS: `/usr/local/mysql/bin/mysql`. |
-| Python                    | 3.9 or later, for the build runner and build regression tests.                                |
+| MySQL Server              | The runner accepts MySQL 8.0.18 or later; regression-tested on MySQL Community Server 26.7.0 for macOS ARM64. Other versions are not validated by the recorded run. |
+| MySQL command-line client | MySQL 8.0.18 or later; tested with 26.7.0. Must connect to the selected server; MariaDB is refused. Example macOS path: `/usr/local/mysql/bin/mysql`. |
+| Python                    | Python 3, standard library only; verified environment: 3.14.2. Source syntax parses as Python 3.9, but runtime compatibility with older interpreters has not been tested. |
 | Git                       | Any recent version                                                                              |
-| Platform                  | Developed and tested on macOS. Any OS that runs MySQL 8 works.                                  |
-| Accounts                  | Schema-scoped `vsm_developer` for builds/migrations; separate `vsm_admin` for provisioning and temporary routine permissions. See [account setup](docs/build-accounts.md). |
+| Platform                  | Verified on macOS ARM64. Examples and disposable tests use Unix sockets and POSIX paths; other platforms, including Windows, have not been validated. |
+| Accounts                  | Schema-scoped `vsm_developer` for builds/migrations; separate `vsm_admin` for provisioning, conditional reader grants, and historical temporary routine permissions. See [account setup](docs/build-accounts.md). |
 
 MySQL Workbench is optional and is only used for viewing results.
+
+The full automated suite also needs the `mysqld` executable and permission to initialize/start disposable local servers; a command-line client alone is insufficient. See [environment checks](#environment-checks-and-logs) for required server settings. Initial admin bootstrap requires `partial_revokes=OFF`; existing-admin developer authorization handles either setting. Optional inspection of routines owned by a legacy definer uses `SHOW_ROUTINE`, requiring MySQL 8.0.20 or later.
 
 ## Build From the Repository
 
 ### 1. Get the files
 
-After these changes are committed and available in Git, clone the repository and replace `YOUR_RELEASE_COMMIT` with that exact commit:
+For reproducible installation, use an exact commit containing the consolidated files described here. `YOUR_RELEASE_COMMIT` below is a placeholder to replace with the supplied, available commit; it does not identify a published consolidated release:
 
 ```bash
 git clone https://github.com/steslic/vehicle-service-maintenance-system.git
@@ -71,6 +84,8 @@ git checkout --detach YOUR_RELEASE_COMMIT
 git rev-parse HEAD
 git status --porcelain  # must be empty for clean-clone evidence
 ```
+
+If supplied a release tag, resolve it with `git rev-parse 'TAG_NAME^{commit}'` and verify the returned commit before checkout. The existing `pre-consolidation-2026-11` tag points to `71696139e84a4e9b69f4baa6f89a6a8d20505561`, the migration-based comparison implementation; it does not contain the consolidated fresh-build architecture. This README declares no new release tag. Uncommitted changes cannot be reproduced by checking out their base SHA alone.
 
 ### 2. Select the server and provision setup accounts
 
@@ -120,13 +135,13 @@ python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql \
     -u vsm_developer -p --admin-user vsm_admin --admin-password
 ```
 
-At `MySQL password:`, enter the **existing developer password from step 2**. If administrative work is required, `Administrative MySQL password:` asks for the **existing admin password from step 2**. The standard command above creates no account passwords; optional demo-account creation is a separate opt-in below. The developer performs schema/data/test operations; the separate admin connection performs optional demo provisioning, temporary routine grants required by migrations 003, 004, and 006, and the scoped audit-reader grants in migration 005. The build defaults to these two account names, refuses root, and never falls back to another account.
+At `MySQL password:`, enter the **existing developer password from step 2**. If administrative work is required, `Administrative MySQL password:` asks for the **existing admin password from step 2**. The standard command creates no accounts or passwords. Schema, fixture, assertion, trigger/routine creation, and version-bookkeeping work use `vsm_developer`. The separate admin handles optional demo provisioning and conditional reader grants; consolidated fresh builds require no temporary developer grant authority. Historical migrations 003, 004, and 006 retain their temporary routine-grant mechanism, and migration 005 retains its conditional admin audit-reader step. See [historical exceptions](docs/build-accounts.md#immutable-migration-exceptions). The build defaults to these two account names, refuses root, and never falls back to another account.
 
 Run the command with the absolute path to `scripts/build.py` if your shell is in another directory. SQL paths, Git metadata, and the default log directory are resolved relative to the checkout, not the shell directory.
 
-The runner refuses an existing database with the selected name and leaves its business data and audit history unchanged. It validates every manifest input and migration checksum before executing SQL, then runs the existing schema/data/test batch with continue-on-error disabled. Verified migrations follow on the same connection. Missing files, SQL errors, and failed test suites produce a nonzero exit code. A failed build retains its partial database for inspection; it is never silently deleted or reused.
+The runner refuses an existing database with the selected name and leaves its business data and audit history unchanged. Fresh builds use the authoritative consolidated SQL files 01–08, verify the independent version-006 baseline contract, and execute only later migrations. Historical SQL is not read during a normal fresh version-006 installation. The legacy profile and existing-database upgrades retain strict historical checksum verification. Missing files, SQL errors, and failed test suites produce a nonzero exit code. A failed build retains its partial database for inspection; it is never silently deleted or reused.
 
-Schema creation, sample data, SQL assertions, migrations, and failure-history updates use the developer session. The optional `08_demo_accounts.sql` file alone uses the admin session, while retaining its position in the same manifest. Build logs identify both authenticated accounts and the temporary routine-authority grants and cleanup. Previously applied migration files and checksums are unchanged.
+The optional `08_demo_accounts.sql` file runs as admin. Without demo provisioning, existing `role_service_advisor`, `role_technician`, and `role_manager` User/Host pairs with any table grant in the exact target database receive EXECUTE on `sp_ListIndicatorValues`. A manager pair with a target `AuditLog` table grant also receives SELECT on `vw_AuditTrail` and EXECUTE on `sp_ListAuditTrail`. Unrelated same-named principals do not qualify. Recipients are selected through the developer's restricted metadata reads before creation/reset; any needed admin connection authenticates then, and the grants run after SQL assertions, before baseline coverage is finalized. No native application role or user is created by this conditional path. Logs identify each account actually used and its administrative operations.
 
 ### 4. Apply later migrations to an existing database
 
@@ -138,29 +153,25 @@ python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql \
     -u vsm_developer -p --admin-user vsm_admin --admin-password
 ```
 
-Enter the **existing developer password**, then the **existing admin password if prompted**. Migration does not create accounts or passwords and never reloads sample data or runs data-changing SQL acceptance tests. A fresh build already applies all migrations through version 006; running this command immediately afterward verifies the schema and makes no changes. Baseline builds through version 002 without demo accounts and already-current migrations with developer-owned routines need no admin connection, so the admin prompt is not shown. Legacy-definer metadata inspection may require the admin as explained in [the technical reference](docs/build-accounts.md).
+Enter the **existing developer password**, then the **existing admin password if prompted**. Migration does not create accounts or passwords and never reloads sample data or runs data-changing SQL acceptance tests. A fresh build installs a verified consolidated version-006 baseline without executing migrations 001–006; running this command immediately afterward verifies the schema and makes no changes. Consolidated builds without demo accounts or qualified existing target-schema roles, legacy builds through version 002 without demo accounts, and already-current migrations with developer-owned routines need no admin connection, so the admin prompt is not shown. Legacy-definer metadata inspection may require the admin as explained in [the technical reference](docs/build-accounts.md).
 
 ### Build manifest
 
-`sql/build.sql` lists the files in execution order:
+[sql/build.sql](sql/build.sql) lists authoritative fresh inputs and the separate historical migration registry. The runner validates inputs, environment settings, optional demo-name collisions, and any needed fresh-build admin authentication before creation/reset, then executes these phases. **The counts describe the pinned version-006 baseline, not permanent totals for future schema versions.**
 
-| Step | File                    | What it creates                                      |
-| ---- | ----------------------- | ---------------------------------------------------- |
-| 1    | `01_schema.sql`         | A new database and all 13 tables                      |
-| 2    | `02_indexes.sql`        | Secondary indexes                                    |
-| 3    | `03_views_reports.sql`  | Views and report queries                             |
-| 4    | `04_procedures.sql`     | Stored procedures                                    |
-| 5    | `05_triggers_roles.sql` | Audit and validation triggers                        |
-| 6    | `06_sample_data.sql`    | Sample data                                          |
-| 7    | `08_demo_accounts.sql`  | Demo roles/accounts, only with `--with-demo-accounts` |
-| 8    | `07_tests.sql`          | Existing automated tests and a failure gate           |
-| 9    | `09_schema_migrations.sql` | History table after baseline verification         |
-| 10   | `migrations/001_baseline.sql` | Register the baseline and object versions       |
-| 11   | `migrations/002_customer_name_index.sql` | Add a customer-name index             |
-| 12   | `migrations/003_indicator_values.sql` | Reference catalog, domain bindings, dropdowns/report labels |
-| 13   | `migrations/004_session_identity_and_provenance.sql` | Verified actors and provenance guards |
-| 14   | `migrations/005_temporal_history.sql` | Mirrored temporal history, complete data-change coverage, and paginated audit reader |
-| 15   | `migrations/006_standardized_error_handling.sql` | Stable error contract and original rejection diagnostics |
+| Phase | Authoritative file | Contents |
+| --- | --- | --- |
+| 1 | `01_schema.sql` | New database, incomplete baseline metadata, all 40 tables |
+| 2 | `02_indexes.sql`, then the foreign-key section of `01_schema.sql` | Exact secondary-index order and final foreign keys |
+| 3 | `04_procedures.sql`, `03_views_reports.sql` | 11 procedures, 4 functions, 6 views, existing report queries |
+| 4 | `06_sample_data.sql` | Tagged fictional fixture, required reference/security rows, observed snapshots |
+| 5 | `05_triggers_roles.sql` | All 187 final triggers in original action order |
+| 6 | `08_demo_accounts.sql` | Optional native accounts and final grants, as admin |
+| 7 | `07_tests.sql` | 41 current-state assertions; no business writes |
+| 8 | `scripts/consolidated_baseline.py` | Apply conditional existing-role grants as admin when needed; verify 246 tracked objects and finalize honest coverage records |
+| 9 | Migration runner | Execute pending migrations above 006, if present; none are currently checked in |
+
+The [version-006 contract](sql/consolidated/006_baseline.json) records expected definitions, each object's last-change version, and covered historical checksums. Its 246 tracked objects comprise 38 application/history tables, 6 views, 11 procedures, 4 functions, and 187 triggers (105 temporal and 82 others). The two administrative version tables bring the full base-table count to 40; they are excluded from the tracked-object fingerprint inventory, while their migration coverage and object-version records are validated. The normal installer never executes or reads the SQL of migrations 001–006 or the legacy files. Existing upgrades still execute pending migration SQL. Historical reproduction reads the frozen `sql/legacy/v001/` copies in their original build order, then original migrations.
 
 Use the runner instead of piping `build.sql` or concatenating SQL files into the client. Direct execution of `build.sql` raises an error directing you to the runner.
 
@@ -196,7 +207,7 @@ python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p 
 
 Provisioning refuses any existing demo username or role before creating or resetting a database. It never drops accounts, changes existing passwords, or adds grants to existing principals. Repeating a demo build on the same server therefore requires separately managing its demo principals or using a fresh disposable server.
 
-The default build reports **65 PASS, 1 SKIP**: T-49 inspects demo-role grants and is explicitly skipped when provisioning is disabled. With `--with-demo-accounts`, all **66 existing automated checks** run. T-11 remains available as a separate login demonstration; the regression suite also executes its six original permission cases using real logins. Test failures are printed with their diagnostics before the failure gate aborts the build.
+Demo provisioning does not change the consolidated build's **41 PASS** assertion count. Historical builds retain **65 PASS, 1 SKIP** without demo accounts or **66 PASS** with them; the skipped assertion is the native technician-grant check T-49. These legacy checks cover reports, rejection paths, workflows, and permissions. T-11 remains a separate login demonstration; the Python suite executes its six original permission cases using real logins. Test failures are printed with diagnostics before the failure gate aborts the build.
 
 ### Schema versions and non-destructive upgrades
 
@@ -205,7 +216,7 @@ Use the same entry point for builds and migrations. `--migrate` never runs the d
 To demonstrate an upgrade on a new disposable database:
 
 ```bash
-# Build the current baseline (version 1), including the existing database tests.
+# Build the historical version-001 baseline and run its SQL tests.
 python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p --admin-password \
     --socket "$DEV_SOCKET" --database vsm_dev_upgrade --target-version 1
 
@@ -218,7 +229,7 @@ python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql -u vsm_developer -p 
     --socket "$DEV_SOCKET" --database vsm_dev_upgrade --migrate
 ```
 
-A normal new build without `--target-version` finishes at the latest manifest version (currently 006). Migrations 001 through 006 must remain immutable once applied; the next new migration is 007. Migrations 003 and 004 add reference/identity metadata and provenance guards; migration 005 adds temporal history; migration 006 adds error codes and nullable rejection diagnostics while retaining existing rows, historical evidence, and lifecycle transitions. See [Reference values, identity, and provenance](docs/reference-and-identity.md), [Temporal history and audit trail](docs/temporal-audit.md), and [Error handling](docs/error-handling.md).
+A normal new build without `--target-version` installs consolidated version 006 and then any later manifest migrations. `--build-profile legacy` reproduces the original ordered build through any supported target; `--target-version 1` through `5` selects legacy automatically. See [SQL consolidation](docs/sql-consolidation.md) for the comparison contract and initialization phases. Migrations 001 through 006 must remain immutable once applied; the next new migration is 007. Migrations 003 and 004 add reference/identity metadata and provenance guards; migration 005 adds temporal history; migration 006 adds error codes and nullable rejection diagnostics while retaining existing rows, historical evidence, and lifecycle transitions. See [Reference values, identity, and provenance](docs/reference-and-identity.md), [Temporal history and audit trail](docs/temporal-audit.md), and [Error handling](docs/error-handling.md).
 
 For an **unversioned existing database**, first stop application writes and take a backup. Explicitly request adoption:
 
@@ -241,7 +252,7 @@ SELECT object_type, object_name, migration_version,
 FROM schema_object_versions ORDER BY object_type, object_name;
 ```
 
-The first table records migration versions, exact file digests, database timestamps, source revisions, and status. The second exposes the last migration that changed each deployed table, view, procedure/function, or trigger. Unchanged objects retain their earlier version. For an adopted database, the source SHA identifies the verified baseline registration, not an invented historical deployment date. Later runs also reject object-definition drift outside migrations.
+The first table records migration versions, exact file digests, database timestamps, source revisions, and status. On consolidated installs, versions 001–006 have status `covered`, NULL `applied_at`, and explicit `baseline_version`, `baseline_checksum`, and `covered_at`. Executed migrations retain status `applied` and an actual execution timestamp. Existing historical tables are not altered. The second exposes the last migration that changed each deployed table, view, procedure/function, or trigger. Unchanged objects retain their earlier version. For an adopted database, the source SHA identifies the verified baseline registration, not an invented historical deployment date. Later runs also reject object-definition drift outside migrations.
 
 ### Reference values and responsible actors
 
@@ -255,15 +266,15 @@ CALL sp_ListIndicatorValues('repair_type');
 
 Registered people are resolved from the full database session login. A caller-supplied person ID can only assert that identity; service calls need explicit person/operation delegations, and the service should have EXECUTE only. An unmapped administrative connection is no longer an operational acting-user fallback. Audit rows record the session account separately from the responsible person; old session identities remain unknown. Follow the [identity and reference guide](docs/reference-and-identity.md) for direct-user, service-account, and provenance details.
 
-After migration 004, `@app_user_id` is a checked compatibility hint, **not a trusted identity source**. Setting it cannot authenticate a person, impersonate another user, authorize a service delegation, or bypass session identity validation. Public procedures resolve the actor from the registered session and use protected operation context for authorized service calls.
+In the current consolidated schema (introduced historically by migration 004), `@app_user_id` is a checked compatibility hint, **not a trusted identity source**. Setting it cannot authenticate a person, impersonate another user, authorize a service delegation, or bypass session identity validation. Public procedures resolve the actor from the registered session and use protected operation context for authorized service calls.
 
 ### Temporal history and audit trail
 
-Migration 005 creates a mirrored history table for each of the 12 business tables and five durable reference/security metadata tables. Inserts open versions, real updates close and replace them, and deletes close versions while retaining their data and deletion attribution. No-op updates create no history. Every live record has one current history version; historical rows have no foreign keys back to deletable business records.
+Migration 005 historically introduced mirrored history for the 12 business tables and five durable reference/security metadata tables. Fresh version-006 builds create the current tables/indexes in files 01/02, load observed snapshots in file 06, and install the final triggers in file 05; pending historical upgrades initialize snapshots through migration 005 instead. Inserts open versions, real updates close and replace them, and deletes close versions while retaining their data and deletion attribution. No-op updates create no history. Every live mirrored source record has one current history version; historical rows have no foreign keys back to deletable business records.
 
 Existing rows are initialized as observed snapshots with NULL historical start times and actors, rather than invented creation events. New events record database-owned UTC microsecond times, the actual session, verified person or explicit system-only maintenance attribution, and protected procedure context. History and business changes roll back together. Existing generic AuditLog records, successful operational event counts, rejection handling, and inventory reasons are retained.
 
-The manager audit role can read the denormalized view `vw_AuditTrail` or use the bounded keyset reader:
+A manager with the native reader grants described above can read `vw_AuditTrail` (file 03) or use the bounded keyset reader (file 04):
 
 ```sql
 CALL sp_ListAuditTrail('Part', JSON_OBJECT('PartID', 1), NULL,
@@ -277,7 +288,7 @@ Arguments are entity, JSON record key, responsible user, inclusive UTC start, ex
 
 ### Stable errors and rejection diagnostics
 
-Migration 006 assigns stable MySQL application error numbers to validation, forbidden, not-found, conflict, warning, and critical conditions. Native deadlocks and lock timeouts remain errors 1213 and 1205, classified as retryable. Runtime classification never matches human-readable messages. Existing procedure parameters, role grants, trigger order, and verified attribution are preserved.
+The current standardized error definitions are in [sql/04_procedures.sql](sql/04_procedures.sql) and [sql/05_triggers_roles.sql](sql/05_triggers_roles.sql); migration 006 introduced them historically for upgrades. Stable MySQL application error numbers cover validation, forbidden, not-found, conflict, warning, and critical conditions. Native deadlocks and lock timeouts remain errors 1213 and 1205, classified as retryable. Runtime classification never matches human-readable messages. Existing procedure parameters, role grants, trigger order, and verified attribution are preserved.
 
 ```sql
 -- Developer/authorized diagnostic context; application adapters can implement
@@ -294,7 +305,7 @@ The two public business procedures capture the original error before cleanup and
 
 ### Adding a migration and recovering failures
 
-Keep the baseline SQL and successful migrations immutable. With migrations 001–006 already present, add `007_descriptive_change.sql` next and append `SOURCE migrations/007_descriptive_change.sql` to **the existing `sql/build.sql` manifest**. There is no separate migration manifest. Every SQL migration must be listed exactly once in numeric order; gaps, unlisted files, missing historical files, changed applied checksums, and downgrade targets are refused. Migration SQL uses the database selected by the runner; it must not switch databases or manage accounts. Restore `DELIMITER ;` at the end of routine definitions.
+Keep `sql/legacy/v001/`, `sql/migrations/baseline.json`, `sql/09_schema_migrations.sql`, and successful migrations immutable. The original files 01–08 now define the consolidated fresh schema; substantive future changes must be paired with a new migration and cross-path verification. With migrations 001–006 already present, add `007_descriptive_change.sql` next and append `SOURCE migrations/007_descriptive_change.sql` to **the existing `sql/build.sql` manifest**. There is no separate migration manifest. Every SQL migration must be listed exactly once in numeric order; gaps, unlisted files, missing pending SQL files, changed applied checksums, and downgrade targets are refused. Historical reproduction and upgrades require historical files and verify their checksums. Fresh version-006 installation instead obtains covered names/digests from the pinned contract and does not require the covered historical SQL files. Migration SQL uses the database selected by the runner; it must not switch databases or manage accounts. Restore `DELIMITER ;` at the end of routine definitions.
 
 The runner holds a connection-level advisory lock throughout verification and migration, preventing two runners from upgrading the same database concurrently. Before executing each migration, it commits an `applying` history row. Only successful DDL and an atomic object-version/history update produce `applied`. SQL failure records `failed` when the server remains reachable; abrupt termination leaves `applying`. An empty history table indicates interruption during initial setup. All these incomplete states block further migrations and are never automatically replayed.
 
@@ -310,34 +321,47 @@ python3 -B -m unittest discover -s tests -v
 
 These tests require **no manual account provisioning or password entry**, including when launched from a terminal. They initialize their own temporary MySQL data directories, start private servers with networking disabled, provision their own admin/developer and restricted test accounts, and generate disposable credentials automatically. Root is used only for each private server's initial admin bootstrap and is then locked. The manual account-provisioning commands in step 2 still prompt normally.
 
-The tests connect only through their own temporary Unix sockets; they do not use `DEV_SOCKET`, connect to the installed project server, or require that server's credentials. `MYSQL_BIN` and `MYSQLD_BIN` may select the client/server executable paths. The private servers and their data are removed afterward. The suite contains **104 tests**: the original 64, 20 temporal-history regressions, and 20 error-handling regressions. These include real concurrent deadlocks and lock timeouts, exact rejection diagnostics, warning and retry decisions, restricted-user authorization, and preservation of business/audit/history values during upgrades.
+The tests connect only through their own temporary Unix sockets; they do not use `DEV_SOCKET`, connect to the installed project server, or require that server's credentials. `MYSQL_BIN` and `MYSQLD_BIN` may select the client/server executable paths. The private servers and their data are removed afterward. The suite currently contains **125 Python tests**: the original 104 plus 21 consolidation regressions. These are separate from the SQL assertion counts above.
+
+| Test module | Tests |
+| --- | ---: |
+| [test_build.py](tests/test_build.py) | 28 |
+| [test_build_accounts.py](tests/test_build_accounts.py) | 14 |
+| [test_reference_identity.py](tests/test_reference_identity.py) | 22 |
+| [test_temporal_history.py](tests/test_temporal_history.py) | 20 |
+| [test_error_handling.py](tests/test_error_handling.py) | 20 |
+| [test_consolidated_build.py](tests/test_consolidated_build.py) | 21 |
+
+Original build/account assertions exercise the legacy profile; current reference, identity, temporal, and error regressions exercise consolidated builds. Consolidation tests compare tagged definitions, trigger order/definers, native permissions, fixture JSON types, workflows, and upgrades from versions 001–006. They also cover qualified/unrelated existing roles, manager-specific audit grants, collisions, and least-privilege execution. Other regressions include real deadlocks and lock timeouts, exact rejection diagnostics, warning/retry decisions, restricted-user authorization, and preservation of business/audit/history values. The [recorded validation](docs/sql-consolidation.md#conditional-permission-correction) passed all 125 tests on disposable MySQL 26.7.0 servers; use the command above to verify your checkout.
 
 ## Verify the Build
 
 ### Test results
 
-The build prints a test summary. A successful build with optional demo provisioning shows:
+The build prints a test summary. A successful consolidated build shows:
 
 ```
-PASS    66
+PASS    41
 ```
 
 and no `FAIL` rows. To see each test individually, look at the full result table printed just before the summary.
 
-### Objects and row counts
+### Version-006 baseline objects and fixture row counts
 
 Connect to the socket selected in step 2 with `/usr/local/mysql/bin/mysql --protocol=SOCKET --socket="$DEV_SOCKET" -u vsm_developer -p`. The following SQL assumes the default `vehicle_service_maintenance` schema; substitute your chosen `VSM_DATABASE` if different.
 
 ```sql
 USE vehicle_service_maintenance;
 
--- Base tables (expect 40: 12 business + generic AuditLog + 2 versioning
+-- Version-006 baseline only; future migrations may change these counts.
+-- Base tables (40: 12 business + generic AuditLog + 2 versioning
 -- + 6 reference/identity + 17 history + TemporalEvent + TemporalWriteContext)
 SHOW FULL TABLES WHERE Table_type = 'BASE TABLE';
 
--- Views, procedures, and triggers
+-- Baseline: 6 views, 11 procedures, 4 functions, and 187 triggers
 SHOW FULL TABLES WHERE Table_type = 'VIEW';
 SHOW PROCEDURE STATUS WHERE Db = 'vehicle_service_maintenance';
+SHOW FUNCTION STATUS WHERE Db = 'vehicle_service_maintenance';
 SHOW TRIGGERS;
 
 -- Indexes
@@ -366,12 +390,32 @@ UNION ALL SELECT 'Part',               COUNT(*) FROM Part
 UNION ALL SELECT 'ServiceAppointment', COUNT(*) FROM ServiceAppointment
 UNION ALL SELECT 'Repair',             COUNT(*) FROM Repair
 UNION ALL SELECT 'RepairEstimate',     COUNT(*) FROM RepairEstimate
+UNION ALL SELECT 'EstimateLineItem',   COUNT(*) FROM EstimateLineItem
 UNION ALL SELECT 'Invoice',            COUNT(*) FROM Invoice
+UNION ALL SELECT 'InvoiceLineItem',    COUNT(*) FROM InvoiceLineItem
 UNION ALL SELECT 'PartsUsage',         COUNT(*) FROM PartsUsage
 UNION ALL SELECT 'AuditLog',           COUNT(*) FROM AuditLog;
 ```
 
-After building files 01 to 06 only, the sample data contains 4 customers, 5 vehicles, 3 technicians, 4 user accounts, 6 parts, 10 appointments, 8 repairs, 4 estimates, and 4 invoices.
+Immediately after a successful consolidated version-006 fresh build, before any application/demo mutations or later migrations, the query above should return these fixture counts. File 06 imports the tagged implementation's final fictional state, including historical acceptance-check effects; the current file-07 assertions do not mutate business data. Running a numeric subset of files 01–06 is not a supported installation path.
+
+| Table | Rows |
+| --- | ---: |
+| Customer | 5 |
+| Vehicle | 6 |
+| Technician | 3 |
+| UserAccount | 4 |
+| Part | 6 |
+| ServiceAppointment | 16 |
+| Repair | 10 |
+| RepairEstimate | 4 |
+| EstimateLineItem | 9 |
+| Invoice | 4 |
+| InvoiceLineItem | 9 |
+| PartsUsage | 9 |
+| AuditLog | 120 |
+
+Reference/security fixtures contain 68 `IndicatorValue`, 3 `UserRolePolicy`, 4 `DatabasePrincipal`, 4 `RoleProcedurePermission`, and zero `PrincipalDelegation` rows. The 17 mirrored history tables each have one initial Snapshot per corresponding source row. `TemporalEvent`, `OperationContext`, and `TemporalWriteContext` are empty. These expectations are checked by [sql/07_tests.sql](sql/07_tests.sql) and the Python regressions; they are fixture expectations, not limits on application data.
 
 ## Demo Accounts
 
@@ -390,7 +434,7 @@ Log in as a demo user:
     -u tech_ben -p "$VSM_DATABASE"
 ```
 
-After migration 004, logging in as `tech_ben` resolves UserID 3 through the registered session identity. You do not need to set `@app_user_id` to identify yourself. Older baseline-only examples use that variable; on the current schema it is checked against the authenticated person and cannot select a different actor. See [Reference values and responsible actors](#reference-values-and-responsible-actors) for the service-delegation distinction.
+On the consolidated schema, logging in as `tech_ben` resolves UserID 3 through the registered session identity, as introduced by migration 004. You do not need to set `@app_user_id` to identify yourself. Older baseline-only examples use that variable; on the current schema it is checked against the authenticated person and cannot select a different actor. See [Reference values and responsible actors](#reference-values-and-responsible-actors) for the service-delegation distinction.
 
 ### Role summary
 
@@ -398,21 +442,21 @@ After migration 004, logging in as `tech_ben` resolves UserID 3 through the regi
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
 | Service Advisor | Manage customers, vehicles, and appointments; book appointments through `sp_CreateServiceAppointment`; create estimates and invoices; finalize approved estimates and invoices | Approve or reject estimates; complete repairs; read the audit log           |
 | Technician      | View work data; change the status of repairs assigned to them; complete repairs through `sp_CompleteRepair`                                                                    | Access customers, estimates, or invoices; change other technicians' repairs |
-| Manager         | Everything above, plus approve or reject estimates and read the audit log                                                                                                      | Modify or delete audit records (no one can)                                 |
+| Manager         | Broad operational access, appointment booking, repair completion, inventory adjustments, estimate approval/rejection, and generic/temporal audit reads; lifecycle and identity guards still apply | Modify/delete audit rows through application privileges; bypass history guards |
 
-See TDD section 10 for the full entitlement matrix.
+See [TDD section 10](docs/tdd.md#10-database-objects-and-sql-design) and [optional native grants](sql/08_demo_accounts.sql) for the entitlement details. Trusted schema owners retain DDL authority; these application restrictions do not make the database tamper-proof against its owner.
 
 ## Running Report Queries
 
-Report queries RQ-01 to RQ-06 are in `03_views_reports.sql`. Open the file in MySQL Workbench (or copy a query into the `mysql` client) and run it against `vehicle_service_maintenance`. In Workbench, turn off Safe Updates (Settings → SQL Editor) and reconnect before running scripts that update data.
+Report queries RQ-01 to RQ-06 are in [sql/03_views_reports.sql](sql/03_views_reports.sql). Copy the report SELECT statements into Workbench or the `mysql` client and run them against your selected schema. The whole file also creates views and belongs in the runner's ordered build; report reads require no Safe Updates change.
 
 ## Performance Analysis
 
-See [`docs/performance/README.md`](docs/performance/README.md). It describes how to load a 20,000-row data set (`perf_data.sql`) and contains three optimization records with `EXPLAIN` / `EXPLAIN ANALYZE` before-and-after results. Rebuild the database afterwards to remove the performance data.
+See [the performance reference](docs/performance/README.md) for three historical optimization records and the loader that adds 20,000 appointments and 20,000 repairs. That loader asserts legacy identities and requires a separate disposable version-002 legacy build; it is incompatible with current identity validation. New performance loaders must use registered actors. Discard the disposable measurement server afterward; do not reload these historical scripts into a consolidated or existing user database.
 
 ## AI Assistance
 
-AI tools (Claude) were used to help draft SQL scripts, sample and performance data, and documentation. All code was reviewed, run, and tested to verify correctness.
+Claude and OpenAI Codex assisted with SQL, sample/performance data, build and migration tooling, regression tests, and documentation. Codex also assisted with SQL consolidation and tagged-equivalence verification. See [SQL consolidation](docs/sql-consolidation.md#conditional-permission-correction) for the recorded regression results, tested environment, and validation limits.
 
 ## Author
 

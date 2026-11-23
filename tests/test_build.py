@@ -20,6 +20,9 @@ NEXT_VERSION = support.NEXT_VERSION
 
 
 class SafeBuildTests(support.DisposableMySQLTestCase):
+    # Preserve all original build/SQL acceptance checks against the historical profile.
+    # The default consolidated entry point is independently covered in test_consolidated_build.
+    build_profile = 'legacy'
     def test_existing_database_preserves_business_and_audit_rows(self):
         self.assert_success(self.build())
         self.sql(f"INSERT INTO `{self.database}`.Customer (CustomerID, Name) VALUES (9999, 'Keep me');")
@@ -55,7 +58,7 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
 
 
     def test_failed_assertion_fails_build_and_stops_following_sql(self):
-        path = self.fixture / "sql" / "07_tests.sql"
+        path = self.fixture / "sql" / "legacy/v001/07_tests.sql"
         text = path.read_text()
         self.assertIn("@c = 3,", text)
         path.write_text(text.replace("@c = 3,", "@c = -1,", 1)
@@ -74,7 +77,7 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
 
 
     def test_sql_error_stops_current_file_and_later_files(self):
-        path = self.fixture / "sql" / "02_indexes.sql"
+        path = self.fixture / "sql" / "legacy/v001/02_indexes.sql"
         path.write_text(path.read_text() + "\nTHIS IS INVALID SQL;\nCREATE TABLE ShouldNotRun (ID INT);\n")
         result = self.build()
         self.assertNotEqual(result.returncode, 0)
@@ -90,7 +93,7 @@ class SafeBuildTests(support.DisposableMySQLTestCase):
     def test_missing_file_refuses_before_even_an_explicit_reset(self):
         self.sql(f"CREATE DATABASE `{self.database}`; CREATE TABLE `{self.database}`.Sentinel (ID INT); "
                  f"INSERT INTO `{self.database}`.Sentinel VALUES (42);")
-        (self.fixture / "sql" / "06_sample_data.sql").unlink()
+        (self.fixture / "sql" / "legacy/v001/06_sample_data.sql").unlink()
         result = self.build("--dev-reset")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("06_sample_data.sql", result.stderr)

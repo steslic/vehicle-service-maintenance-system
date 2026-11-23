@@ -20,9 +20,12 @@ DEMO_PRINCIPALS = (
     "role_service_advisor", "role_technician", "role_manager",
     "sa_amy", "tech_ben", "mgr_mike",
 )
+CONSOLIDATED_FILES = ('01_schema.sql', '02_indexes.sql', '04_procedures.sql',
+                      '03_views_reports.sql', '06_sample_data.sql', '05_triggers_roles.sql',
+                      '08_demo_accounts.sql', '07_tests.sql')
 
 
-def load_inputs(sql_dir):
+def load_inputs(sql_dir, legacy=False, historical=False):
     """Validate and read the single ordered manifest before connecting."""
     manifest = (sql_dir / "build.sql").read_text()
     names = re.findall(r"^SOURCE\s+((?:migrations/)?[0-9]{2,3}_[a-z0-9_]+\.sql)\s*$",
@@ -31,9 +34,21 @@ def load_inputs(sql_dir):
         raise ValueError("Build input list is empty or contains duplicates")
     if len(re.findall(r"^SOURCE\b.*$", manifest, re.MULTILINE)) != len(names):
         raise ValueError("Invalid SOURCE entry in sql/build.sql")
+    if [name for name in names if not name.startswith('migrations/')] != [*CONSOLIDATED_FILES, HISTORY_FILE]:
+        raise ValueError('Invalid build input order; expected consolidated 01–08 and history registry')
+    if legacy:
+        # The old build order is part of the historical release contract.
+        names = [f'{n:02d}_{suffix}.sql' for n, suffix in (
+            (1, 'schema'), (2, 'indexes'), (3, 'views_reports'), (4, 'procedures'),
+            (5, 'triggers_roles'), (6, 'sample_data'), (8, 'demo_accounts'), (7, 'tests'))] + [
+                name for name in names if name == HISTORY_FILE or name.startswith('migrations/')]
     inputs = {}
     for name in names:
-        data = (sql_dir / name).read_bytes()
+        if not historical and (name == HISTORY_FILE or
+                (name.startswith('migrations/') and int(Path(name).name[:3]) <= 6)):
+            continue
+        path = sql_dir / ('legacy/v001/' + name if legacy and '/' not in name and name != HISTORY_FILE else name)
+        data = path.read_bytes()
         if re.search(r"^\s*SOURCE\b", data.decode("utf-8"), re.MULTILINE | re.IGNORECASE):
             raise ValueError(f"Nested SOURCE is not supported: {name}")
         inputs[name] = data
@@ -73,6 +88,8 @@ def main(argv=None):
     parser.add_argument("--migrate", action="store_true", help="Upgrade an existing database; never load sample data/tests")
     parser.add_argument("--baseline", action="store_true", help="Verify/register an unversioned database before upgrading")
     parser.add_argument("--target-version", type=int, help="Stop at this migration version (default: latest)")
+    parser.add_argument('--build-profile', choices=('auto', 'consolidated', 'legacy'), default='auto',
+                        help='Fresh installation source; targets below 006 automatically use legacy')
     parser.add_argument("--log-dir", type=Path, help="Build log directory (default: repository logs/)")
     args = parser.parse_args(argv)
 
@@ -90,6 +107,10 @@ def main(argv=None):
         parser.error("--migrate cannot reset a database or provision demo accounts")
     if args.baseline and not args.migrate:
         parser.error("--baseline is only valid with --migrate")
+    if args.migrate and args.build_profile != 'auto':
+        parser.error('--build-profile is only valid for fresh builds')
+    if args.build_profile == 'consolidated' and args.target_version is not None and args.target_version < 6:
+        parser.error('Consolidated installations start at version 006')
 
     root = Path(__file__).resolve().parent.parent
     log = None
@@ -99,8 +120,17 @@ def main(argv=None):
         log.write(f"MODE: {'migrate' if args.migrate else 'build'}; DATABASE: {args.database}")
         sha, dirty = source_revision(root)
         log.write(f"SOURCE COMMIT: {sha}; WORKTREE DIRTY: {str(dirty).lower()}")
-        inputs = load_inputs(root / "sql")
-        migrations, snapshot = load_migrations(root / "sql", inputs)
+        legacy = args.build_profile == 'legacy' or (args.target_version is not None and args.target_version < 6)
+        consolidated = not args.migrate and not legacy
+        inputs = load_inputs(root / 'sql', legacy=legacy, historical=not consolidated)
+        if consolidated:
+            from consolidated_baseline import load_contract, load_current_migrations, install, existing_reader_grants
+            contract = load_contract(root / 'sql')
+            migrations = load_current_migrations(root / 'sql', inputs, contract)
+            snapshot = None
+        else:
+            migrations, snapshot = load_migrations(root / 'sql', inputs)
+        log.write('BUILD PROFILE: ' + ('consolidated' if consolidated else 'legacy/upgrades'))
         if args.target_version is not None and args.target_version not in [m[0] for m in migrations]:
             raise ValueError("Target version is not in sql/build.sql")
         client_version = subprocess.check_output([args.mysql, "--no-defaults", "--version"], text=True).strip()
@@ -157,20 +187,29 @@ def main(argv=None):
                     collisions = get_admin().run(f"SELECT User, Host FROM mysql.user WHERE User IN ({names});")
                     if collisions:
                         raise ValueError("Refusing demo provisioning: existing users/roles would collide:\n" + collisions)
-                if (args.target_version or migrations[-1][0]) >= 3:
+                if not consolidated and (args.target_version or migrations[-1][0]) >= 3:
                     get_admin()  # Fail authentication before creating/resetting a database.
+                reader_grants = ()
+                if consolidated and not args.with_demo_accounts:
+                    reader_grants = existing_reader_grants(session, args.database)
+                    if reader_grants:
+                        get_admin()  # Qualified existing roles need grants even without demo provisioning.
                 if args.dev_reset:
                     log.write(f"OPERATION DEVELOPMENT RESET: {args.database}")
                     session.run(f"DROP DATABASE IF EXISTS `{args.database}`;")
                 # CREATE without IF NOT EXISTS also guards concurrent creators.
                 log.write(f"Building {args.database}")
                 session.run(f"SET @build_with_demo_accounts = {int(args.with_demo_accounts)};")
-                for name, sql in load_build(root / "sql", args.database, args.with_demo_accounts, inputs):
-                    operation_session = get_admin() if name == DEMO_FILE and args.with_demo_accounts else session
-                    if operation_session is not session:
-                        log.write(f"ADMIN OPERATION: {name}")
-                    operation_session.run(sql, echo=True)
-                log.write("DATABASE TEST SUITE: PASS (see individual results and summary above)")
+                if consolidated:
+                    install(session, client, env, log, args.database, inputs, contract, sha, dirty,
+                            args.with_demo_accounts, get_admin, reader_grants)
+                else:
+                    for name, sql in load_build(root / "sql", args.database, args.with_demo_accounts, inputs):
+                        operation_session = get_admin() if name == DEMO_FILE and args.with_demo_accounts else session
+                        if operation_session is not session:
+                            log.write(f"ADMIN OPERATION: {name}")
+                        operation_session.run(sql, echo=True)
+                    log.write("DATABASE TEST SUITE: PASS (see individual results and summary above)")
             run_migrations(session, client, env, log, args.database, inputs, migrations, snapshot,
                            sha, dirty, baseline=(not args.migrate or args.baseline), target=args.target_version,
                            get_admin=get_admin)

@@ -239,8 +239,17 @@ def run_migrations(session, command, env, log, database, inputs, migrations, sna
         expected = migrations[index]
         if row[1:3] != [expected[1], expected[2]]:
             raise ValueError(f"Migration checksum/filename mismatch: version {row[0]}")
-        if row[3] != "applied":
+        if row[3] not in ('applied', 'covered'):
             raise ValueError(f"Incomplete migration {row[0]} ({row[3]}): no retry; inspect logs and restore the pre-run backup")
+    has_baseline_metadata = session.run("SELECT COUNT(*) FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'schema_migrations' AND COLUMN_NAME = 'baseline_version';") == '1'
+    if any(row[3] == 'covered' for row in history) or has_baseline_metadata:
+        from consolidated_baseline import load_contract, validate_coverage
+        from pathlib import Path
+        contract = load_contract(Path(__file__).resolve().parent.parent / 'sql')
+        validate_coverage(session, contract)
+        if any(row[3] == 'covered' for row in history[6:]):
+            raise ValueError('Only migrations 001–006 may be covered by this baseline')
     if history:
         if history[-1][0] > target:
             raise ValueError("Downgrades/out-of-order migration targets are not supported")

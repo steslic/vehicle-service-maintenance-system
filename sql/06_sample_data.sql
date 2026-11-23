@@ -1,266 +1,384 @@
--- Vehicle Service and Maintenance Management System
--- 06_sample_data.sql
--- Loads fictional sample data through the triggers and procedures.
---
--- Run after 05_triggers_roles.sql, as the administrative (root) account.
--- Every audited write runs with @app_user_id set to the acting user, so
--- the AuditLog is populated with realistic attribution.
---
--- Load order follows the validation rules:
---   * Technician, UserAccount, Customer, Vehicle, Part are not audited.
---   * Repairs move Open -> In Progress -> Completed (FRD transitions).
---   * Historical repairs are completed through sp_CompleteRepair, so parts
---     usage and inventory reductions are recorded exactly as in production.
---   * Estimates and invoices are inserted as Draft, given line items, and
---     then moved through their allowed transitions.
---
--- Note: sp_CompleteRepair sets CompletionDateTime and RecordedDateTime to
--- the time this script runs.
+-- Fictional initial state exported from the tagged build (including its original acceptance-check effects).
+
+-- Historical audit evidence retains unknown sessions/diagnostics. No operational identity bypass.
 
 USE vehicle_service_maintenance;
 
-SET @app_user_id = NULL;
-SET @adj_reason  = NULL;
+SET @fixture_clock = UTC_TIMESTAMP();
 
+INSERT INTO `IndicatorValue` (`IndicatorName`, `ValueCode`, `Description`, `DisplayOrder`) VALUES
+('active_status', '0', 'Inactive', 1),
+('active_status', '1', 'Active', 2),
+('appointment_status', 'Cancelled', 'Cancelled', 5),
+('appointment_status', 'Checked In', 'Checked In', 2),
+('appointment_status', 'Completed', 'Completed', 4),
+('appointment_status', 'In Progress', 'In Progress', 3),
+('appointment_status', 'No Show', 'No Show', 6),
+('appointment_status', 'Scheduled', 'Scheduled', 1),
+('audit_action', 'Approve', 'Approve', 9),
+('audit_action', 'Cancel', 'Cancel', 4),
+('audit_action', 'Complete', 'Complete', 5),
+('audit_action', 'Create', 'Create', 1),
+('audit_action', 'Delete', 'Delete', 3),
+('audit_action', 'Finalize', 'Finalize', 11),
+('audit_action', 'Inventory Adjustment', 'Inventory Adjustment', 12),
+('audit_action', 'Reject', 'Reject', 10),
+('audit_action', 'Rejected', 'Rejected', 14),
+('audit_action', 'Reschedule', 'Reschedule', 8),
+('audit_action', 'Reversal', 'Reversal', 13),
+('audit_action', 'Status Change', 'Status Change', 6),
+('audit_action', 'Technician Reassignment', 'Technician Reassignment', 7),
+('audit_action', 'Update', 'Update', 2),
+('audit_entity', 'Customer', 'Customer', 1),
+('audit_entity', 'DatabasePrincipal', 'DatabasePrincipal', 14),
+('audit_entity', 'EstimateLineItem', 'EstimateLineItem', 9),
+('audit_entity', 'IndicatorValue', 'IndicatorValue', 13),
+('audit_entity', 'Invoice', 'Invoice', 10),
+('audit_entity', 'InvoiceLineItem', 'InvoiceLineItem', 11),
+('audit_entity', 'Part', 'Part', 5),
+('audit_entity', 'PartsUsage', 'PartsUsage', 12),
+('audit_entity', 'PrincipalDelegation', 'PrincipalDelegation', 15),
+('audit_entity', 'Repair', 'Repair', 7),
+('audit_entity', 'RepairEstimate', 'RepairEstimate', 8),
+('audit_entity', 'ServiceAppointment', 'ServiceAppointment', 6),
+('audit_entity', 'Technician', 'Technician', 3),
+('audit_entity', 'UserAccount', 'UserAccount', 4),
+('audit_entity', 'Vehicle', 'Vehicle', 2),
+('estimate_status', 'Approved', 'Approved', 3),
+('estimate_status', 'Draft', 'Draft', 1),
+('estimate_status', 'Expired', 'Expired', 5),
+('estimate_status', 'Finalized', 'Finalized', 6),
+('estimate_status', 'Pending Approval', 'Pending Approval', 2),
+('estimate_status', 'Rejected', 'Rejected', 4),
+('invoice_status', 'Draft', 'Draft', 1),
+('invoice_status', 'Finalized', 'Finalized', 2),
+('migration_status', 'applied', 'applied', 2),
+('migration_status', 'applying', 'applying', 1),
+('migration_status', 'failed', 'failed', 3),
+('principal_type', 'Person', 'Person', 1),
+('principal_type', 'Service', 'Service', 2),
+('procedure_name', 'sp_CompleteRepair', 'sp_CompleteRepair', 2),
+('procedure_name', 'sp_CreateServiceAppointment', 'sp_CreateServiceAppointment', 1),
+('repair_status', 'Cancelled', 'Cancelled', 4),
+('repair_status', 'Completed', 'Completed', 3),
+('repair_status', 'In Progress', 'In Progress', 2),
+('repair_status', 'Open', 'Open', 1),
+('repair_type', 'Battery Replacement', 'Battery Replacement', 8),
+('repair_type', 'Brake Service', 'Brake Service', 2),
+('repair_type', 'Diagnostic', 'Diagnostic', 6),
+('repair_type', 'Filter Replacement', 'Filter Replacement', 4),
+('repair_type', 'Ignition Service', 'Ignition Service', 3),
+('repair_type', 'Oil Change', 'Oil Change', 1),
+('repair_type', 'Scheduled Maintenance', 'Scheduled Maintenance', 9),
+('repair_type', 'Tire Rotation', 'Tire Rotation', 7),
+('repair_type', 'Tune-Up', 'Tune-Up', 5),
+('user_role', 'Manager', 'Manager', 3),
+('user_role', 'Service Advisor', 'Service Advisor', 1),
+('user_role', 'Technician', 'Technician', 2);
 
--- =====================================================================
--- 1. TECHNICIANS (not audited)
--- =====================================================================
-INSERT INTO Technician (TechnicianID, Name, Phone, Email, ActiveStatus) VALUES
-    (1, 'Ben Carter', '555-0101', 'ben.carter@example.com',  1),
-    (2, 'Carla Diaz', '555-0102', 'carla.diaz@example.com',  1),
-    (3, 'Dan Evans',  '555-0103', 'dan.evans@example.com',   0);   -- inactive
+INSERT INTO `UserRolePolicy` (`RoleType`, `RequiresTechnician`) VALUES
+('Manager', 0),
+('Service Advisor', 0),
+('Technician', 1);
 
+INSERT INTO `Technician` (`TechnicianID`, `Name`, `Phone`, `Email`, `ActiveStatus`) VALUES
+(1, 'Ben Carter', '555-0101', 'ben.carter@example.com', 1),
+(2, 'Carla Diaz', '555-0102', 'carla.diaz@example.com', 1),
+(3, 'Dan Evans', '555-0103', 'dan.evans@example.com', 0);
 
--- =====================================================================
--- 2. USER ACCOUNTS (not audited)
--- Usernames match the optional demo MySQL accounts in 08_demo_accounts.sql
--- =====================================================================
-INSERT INTO UserAccount (UserID, Username, Name, RoleType, TechnicianID) VALUES
-    (1, 'mgr_mike',   'Mike Johnson', 'Manager',         NULL),
-    (2, 'sa_amy',     'Amy Lee',      'Service Advisor', NULL),
-    (3, 'tech_ben',   'Ben Carter',   'Technician',      1),
-    (4, 'tech_carla', 'Carla Diaz',   'Technician',      2);
+INSERT INTO `Part` (`PartID`, `PartNumber`, `PartName`, `QuantityOnHand`, `UnitCost`, `UnitSellingPrice`, `MinimumInventoryLevel`, `ActiveStatus`) VALUES
+(1, 'OF-100', 'Oil Filter', 30, CAST('4.50' AS DECIMAL(3,2)), CAST('9.99' AS DECIMAL(3,2)), 10, 1),
+(2, 'BP-200', 'Front Brake Pads', 7, CAST('22.00' AS DECIMAL(4,2)), CAST('49.99' AS DECIMAL(4,2)), 4, 1),
+(3, 'BR-300', 'Brake Rotor', 0, CAST('35.00' AS DECIMAL(4,2)), CAST('79.99' AS DECIMAL(4,2)), 4, 1),
+(4, 'AF-400', 'Engine Air Filter', 24, CAST('6.00' AS DECIMAL(3,2)), CAST('16.99' AS DECIMAL(4,2)), 5, 1),
+(5, 'SP-500', 'Spark Plug', 0, CAST('3.00' AS DECIMAL(3,2)), CAST('8.99' AS DECIMAL(3,2)), 8, 1),
+(6, 'WB-600', 'Wiper Blade', 10, CAST('5.00' AS DECIMAL(3,2)), CAST('14.99' AS DECIMAL(4,2)), 4, 0);
 
+INSERT INTO `UserAccount` (`UserID`, `Username`, `Name`, `RoleType`, `TechnicianID`) VALUES
+(1, 'mgr_mike', 'Mike Johnson', 'Manager', NULL),
+(2, 'sa_amy', 'Amy Lee', 'Service Advisor', NULL),
+(3, 'tech_ben', 'Ben Carter', 'Technician', 1),
+(4, 'tech_carla', 'Carla Diaz', 'Technician', 2);
 
--- =====================================================================
--- 3. CUSTOMERS AND VEHICLES (not audited)
--- =====================================================================
-INSERT INTO Customer (CustomerID, Name, Phone, Email) VALUES
-    (1, 'Laura Martinez', '555-0201', 'laura.martinez@example.com'),
-    (2, 'James Wilson',   '555-0202', 'james.wilson@example.com'),
-    (3, 'Priya Shah',     '555-0203', 'priya.shah@example.com'),
-    (4, 'Tom Becker',     '555-0204', NULL);
+INSERT INTO `Customer` (`CustomerID`, `Name`, `Phone`, `Email`) VALUES
+(1, 'Laura Martinez', '555-0201', 'laura.martinez@example.com'),
+(2, 'James Wilson', '555-0202', 'james.wilson@example.com'),
+(3, 'Priya Shah', '555-0203', 'priya.shah@example.com'),
+(4, 'Tom Becker', '555-0204', NULL),
+(100, 'Test Customer', '555-0999', 'test.customer@example.com');
 
-INSERT INTO Vehicle (VehicleID, CustomerID, VIN, Make, Model, `Year`) VALUES
-    (1, 1, '1HGCV1F34LA012345', 'Honda',     'Accord',  2020),
-    (2, 2, '1FTFW1E50MFA23456', 'Ford',      'F-150',   2021),
-    (3, 3, '4T1B11HK5KU456789', 'Toyota',    'Camry',   2019),
-    (4, 4, '1G1ZD5ST8JF567890', 'Chevrolet', 'Malibu',  2018),
-    (5, 1, '2T3P1RFV0MW678901', 'Toyota',    'RAV4',    2021);   -- Laura owns two vehicles
+INSERT INTO `Vehicle` (`VehicleID`, `CustomerID`, `VIN`, `Make`, `Model`, `Year`) VALUES
+(1, 1, '1HGCV1F34LA012345', 'Honda', 'Accord', 2020),
+(2, 2, '1FTFW1E50MFA23456', 'Ford', 'F-150', 2021),
+(3, 3, '4T1B11HK5KU456789', 'Toyota', 'Camry', 2019),
+(4, 4, '1G1ZD5ST8JF567890', 'Chevrolet', 'Malibu', 2018),
+(5, 1, '2T3P1RFV0MW678901', 'Toyota', 'RAV4', 2021),
+(100, 100, 'TESTVIN0000000100', 'Subaru', 'Outback', 2022);
 
+INSERT INTO `ServiceAppointment` (`AppointmentID`, `VehicleID`, `TechnicianID`, `CreatedByUserID`, `AppointmentDateTime`, `Status`, `ServiceRequestDescription`, `EstimatedDuration`, `CreationTimestamp`, `CancellationDate`, `CancellationReason`) VALUES
+(1, 1, 1, 2, CAST('2026-10-15 09:00:00.000000' AS DATETIME(6)), 'Completed', 'Oil change', 60, CAST('2026-10-10 08:30:00.000000' AS DATETIME(6)), NULL, NULL),
+(2, 2, 2, 2, CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), 'Completed', 'Grinding noise when braking', 120, CAST('2026-10-10 09:00:00.000000' AS DATETIME(6)), NULL, NULL),
+(3, 3, 1, 2, CAST('2026-10-15 13:00:00.000000' AS DATETIME(6)), 'Completed', 'Check engine light, rough idle', 90, CAST('2026-10-11 10:15:00.000000' AS DATETIME(6)), NULL, NULL),
+(4, 1, 2, 2, CAST('2026-09-20 10:00:00.000000' AS DATETIME(6)), 'Completed', 'Engine air filter replacement', 60, CAST('2026-09-15 14:00:00.000000' AS DATETIME(6)), NULL, NULL),
+(5, 4, 1, 2, CAST('2026-10-10 11:00:00.000000' AS DATETIME(6)), 'Cancelled', 'Tire rotation', 60, CAST('2026-10-05 16:20:00.000000' AS DATETIME(6)), CAST('2026-10-08' AS DATE), 'Customer rescheduled with another shop'),
+(6, 5, 1, 2, CAST('2026-10-16 09:00:00.000000' AS DATETIME(6)), 'In Progress', 'Brake inspection and pad replacement', 120, CAST('2026-10-12 11:00:00.000000' AS DATETIME(6)), NULL, NULL),
+(7, 3, 2, 2, CAST('2026-10-16 10:00:00.000000' AS DATETIME(6)), 'In Progress', 'Tune-up', 60, CAST('2026-10-13 09:45:00.000000' AS DATETIME(6)), NULL, NULL),
+(8, 4, 2, 2, CAST('2026-11-03 15:00:00.000000' AS DATETIME(6)), 'Scheduled', 'Oil change', 60, CAST('2026-10-14 13:00:00.000000' AS DATETIME(6)), NULL, NULL),
+(9, 2, 1, 2, CAST('2026-11-04 09:00:00.000000' AS DATETIME(6)), 'Scheduled', 'Diagnose dashboard warning light', 60, CAST('2026-10-14 15:30:00.000000' AS DATETIME(6)), NULL, NULL),
+(10, 1, 2, 2, CAST('2026-11-05 11:00:00.000000' AS DATETIME(6)), 'Scheduled', 'Replace wiper blades', 45, CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), NULL, NULL),
+(11, 5, 1, 2, TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 60 DAY), '08:00:00.000000'), 'Scheduled', 'Test: 30,000-mile service', 90, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), NULL, NULL),
+(12, 1, 2, 2, TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 62 DAY), '08:00:00.000000'), 'Scheduled', 'Boundary test: 1 minute', 1, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), NULL, NULL),
+(13, 1, 2, 2, TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 63 DAY), '08:00:00.000000'), 'Scheduled', 'Boundary test: 24 hours', 1440, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), NULL, NULL),
+(14, 5, 1, 2, TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 60 DAY), '09:30:00.000000'), 'Scheduled', 'Boundary test: back to back', 60, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), NULL, NULL),
+(15, 1, 2, 2, TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'In Progress', 'Boundary test: all spark plugs', 60, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), NULL, NULL),
+(16, 1, 2, 2, TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 67 DAY), '08:00:00.000000'), 'Checked In', 'Appointment status test', 60, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), NULL, NULL);
 
--- =====================================================================
--- 4. PARTS (inserts are not audited; quantity updates are)
--- Starting quantities are chosen so that, after the historical repairs
--- below, Brake Rotor and Spark Plug fall under their minimum (RQ-04).
--- =====================================================================
-INSERT INTO Part (PartID, PartNumber, PartName, QuantityOnHand, UnitCost,
-                  UnitSellingPrice, MinimumInventoryLevel, ActiveStatus) VALUES
-    (1, 'OF-100', 'Oil Filter',        26,  4.50,  9.99, 10, 1),
-    (2, 'BP-200', 'Front Brake Pads',   9, 22.00, 49.99,  4, 1),
-    (3, 'BR-300', 'Brake Rotor',        4, 35.00, 79.99,  4, 1),
-    (4, 'AF-400', 'Engine Air Filter', 16,  6.00, 16.99,  5, 1),
-    (5, 'SP-500', 'Spark Plug',         7,  3.00,  8.99,  8, 1),
-    (6, 'WB-600', 'Wiper Blade',       10,  5.00, 14.99,  4, 0);   -- inactive
+INSERT INTO `Repair` (`RepairID`, `AppointmentID`, `CompletedByTechnicianID`, `RepairDateTime`, `RepairType`, `RepairDescription`, `LaborHours`, `Status`, `CompletionDateTime`) VALUES
+(1, 1, 1, CAST('2026-10-15 09:00:00.000000' AS DATETIME(6)), 'Oil Change', 'Drain and replace engine oil and filter', CAST('0.50' AS DECIMAL(3,2)), 'Completed', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(2, 2, 2, CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), 'Brake Service', 'Replace front brake pads and rotors', CAST('2.00' AS DECIMAL(3,2)), 'Completed', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(3, 3, 1, CAST('2026-10-15 13:00:00.000000' AS DATETIME(6)), 'Ignition Service', 'Replace spark plugs to correct misfire', CAST('1.00' AS DECIMAL(3,2)), 'Completed', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(4, 4, 2, CAST('2026-09-20 10:00:00.000000' AS DATETIME(6)), 'Filter Replacement', 'Replace engine air filter', CAST('0.25' AS DECIMAL(3,2)), 'Completed', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(6, 6, 1, CAST('2026-10-16 09:00:00.000000' AS DATETIME(6)), 'Brake Service', 'Inspect brakes and replace front pads and rotors', CAST('2.00' AS DECIMAL(3,2)), 'Completed', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(7, 7, 2, CAST('2026-10-16 10:00:00.000000' AS DATETIME(6)), 'Tune-Up', 'Replace air filter and spark plugs', CAST('1.00' AS DECIMAL(3,2)), 'Completed', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(8, 8, NULL, CAST('2026-11-03 14:00:00.000000' AS DATETIME(6)), 'Oil Change', 'Drain and replace engine oil and filter', NULL, 'Open', NULL),
+(9, 9, NULL, CAST('2026-11-04 09:00:00.000000' AS DATETIME(6)), 'Diagnostic', 'Scan codes and diagnose warning light', NULL, 'Open', NULL),
+(10, 15, 2, TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'Ignition Service', 'Replace all spark plugs', CAST('1.00' AS DECIMAL(3,2)), 'Completed', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(11, 16, NULL, TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 67 DAY), '08:00:00.000000'), 'Diagnostic', 'Status test', CAST('0.50' AS DECIMAL(3,2)), 'In Progress', NULL);
 
+INSERT INTO `RepairEstimate` (`EstimateID`, `AppointmentID`, `CreatedByUserID`, `ApprovedByUserID`, `EstimateDate`, `Status`, `TotalAmount`, `ApprovalDateTime`) VALUES
+(1, 1, 2, 1, CAST('2026-10-14' AS DATE), 'Finalized', CAST('49.98' AS DECIMAL(4,2)), CAST('2026-10-14 16:00:00.000000' AS DATETIME(6))),
+(2, 2, 2, 1, CAST('2026-10-14' AS DATE), 'Finalized', CAST('399.97' AS DECIMAL(5,2)), CAST('2026-10-14 16:00:00.000000' AS DATETIME(6))),
+(3, 6, 2, NULL, CAST('2026-10-16' AS DATE), 'Pending Approval', CAST('239.99' AS DECIMAL(5,2)), NULL),
+(4, 7, 2, NULL, CAST('2026-10-16' AS DATE), 'Draft', CAST('130.96' AS DECIMAL(5,2)), NULL);
 
--- =====================================================================
--- 5. SERVICE APPOINTMENTS (audited; created by the service advisor)
--- Historical appointments are inserted directly because
--- sp_CreateServiceAppointment only accepts future dates.
--- =====================================================================
-SET @app_user_id = 2;   -- Amy Lee, Service Advisor
+INSERT INTO `EstimateLineItem` (`EstimateID`, `LineNumber`, `Description`, `Quantity`, `UnitPrice`, `LineTotal`) VALUES
+(1, 1, 'Oil change labor', 1, CAST('39.99' AS DECIMAL(4,2)), CAST('39.99' AS DECIMAL(4,2))),
+(1, 2, 'Oil filter', 1, CAST('9.99' AS DECIMAL(3,2)), CAST('9.99' AS DECIMAL(3,2))),
+(2, 1, 'Brake service labor (hr)', 2, CAST('95.00' AS DECIMAL(4,2)), CAST('190.00' AS DECIMAL(5,2))),
+(2, 2, 'Front brake pads', 1, CAST('49.99' AS DECIMAL(4,2)), CAST('49.99' AS DECIMAL(4,2))),
+(2, 3, 'Brake rotor', 2, CAST('79.99' AS DECIMAL(4,2)), CAST('159.98' AS DECIMAL(5,2))),
+(3, 1, 'Brake service labor (hr)', 2, CAST('95.00' AS DECIMAL(4,2)), CAST('190.00' AS DECIMAL(5,2))),
+(3, 2, 'Front brake pads', 1, CAST('49.99' AS DECIMAL(4,2)), CAST('49.99' AS DECIMAL(4,2))),
+(4, 1, 'Tune-up labor (hr)', 1, CAST('95.00' AS DECIMAL(4,2)), CAST('95.00' AS DECIMAL(4,2))),
+(4, 2, 'Spark plug', 4, CAST('8.99' AS DECIMAL(3,2)), CAST('35.96' AS DECIMAL(4,2)));
 
-INSERT INTO ServiceAppointment (AppointmentID, VehicleID, TechnicianID, CreatedByUserID,
-        AppointmentDateTime, Status, ServiceRequestDescription, EstimatedDuration, CreationTimestamp) VALUES
-    -- History (completed below)
-    (1, 1, 1, 2, '2026-10-15 09:00:00', 'In Progress', 'Oil change',                            60, '2026-10-10 08:30:00'),
-    (2, 2, 2, 2, '2026-10-15 10:00:00', 'In Progress', 'Grinding noise when braking',          120, '2026-10-10 09:00:00'),
-    (3, 3, 1, 2, '2026-10-15 13:00:00', 'In Progress', 'Check engine light, rough idle',        90, '2026-10-11 10:15:00'),
-    (4, 1, 2, 2, '2026-09-20 10:00:00', 'In Progress', 'Engine air filter replacement',         60, '2026-09-15 14:00:00'),
-    -- Cancelled
-    (5, 4, 1, 2, '2026-10-10 11:00:00', 'Scheduled',   'Tire rotation',                         60, '2026-10-05 16:20:00'),
-    -- Active work in progress
-    (6, 5, 1, 2, '2026-10-16 09:00:00', 'In Progress', 'Brake inspection and pad replacement', 120, '2026-10-12 11:00:00'),
-    (7, 3, 2, 2, '2026-10-16 10:00:00', 'In Progress', 'Tune-up',                               60, '2026-10-13 09:45:00'),
-    -- Upcoming
-    (8, 4, 2, 2, '2026-11-03 14:00:00', 'Scheduled',   'Oil change',                            60, '2026-10-14 13:00:00'),
-    (9, 2, 1, 2, '2026-11-04 09:00:00', 'Scheduled',   'Diagnose dashboard warning light',      60, '2026-10-14 15:30:00'),
-    (10, 1, 2, 2, '2026-11-05 11:00:00', 'Scheduled',  'Replace wiper blades',                  45, '2026-10-15 10:00:00');
+INSERT INTO `Invoice` (`InvoiceID`, `AppointmentID`, `CreatedByUserID`, `FinalizedByUserID`, `InvoiceDate`, `Status`, `TotalAmount`, `FinalizationDateTime`) VALUES
+(1, 1, 2, 2, CAST('2026-10-15' AS DATE), 'Finalized', CAST('49.98' AS DECIMAL(4,2)), CAST('2026-10-15 11:30:00.000000' AS DATETIME(6))),
+(2, 2, 2, 1, CAST('2026-10-15' AS DATE), 'Finalized', CAST('399.97' AS DECIMAL(5,2)), CAST('2026-10-15 13:00:00.000000' AS DATETIME(6))),
+(3, 3, 2, NULL, CAST('2026-10-15' AS DATE), 'Draft', CAST('130.96' AS DECIMAL(5,2)), NULL),
+(4, 4, 2, 2, CAST('2026-09-20' AS DATE), 'Finalized', CAST('41.99' AS DECIMAL(4,2)), CAST('2026-09-20 12:00:00.000000' AS DATETIME(6)));
 
--- Customer cancelled appointment 5 (Scheduled -> Cancelled)
-UPDATE ServiceAppointment
-SET Status = 'Cancelled',
-    CancellationDate = '2026-10-08',
-    CancellationReason = 'Customer rescheduled with another shop'
-WHERE AppointmentID = 5;
+INSERT INTO `InvoiceLineItem` (`InvoiceLineItemID`, `InvoiceID`, `Description`, `Quantity`, `UnitPrice`, `LineTotal`) VALUES
+(1, 1, 'Oil change labor', 1, CAST('39.99' AS DECIMAL(4,2)), CAST('39.99' AS DECIMAL(4,2))),
+(2, 1, 'Oil filter', 1, CAST('9.99' AS DECIMAL(3,2)), CAST('9.99' AS DECIMAL(3,2))),
+(3, 2, 'Brake service labor (hr)', 2, CAST('95.00' AS DECIMAL(4,2)), CAST('190.00' AS DECIMAL(5,2))),
+(4, 2, 'Front brake pads', 1, CAST('49.99' AS DECIMAL(4,2)), CAST('49.99' AS DECIMAL(4,2))),
+(5, 2, 'Brake rotor', 2, CAST('79.99' AS DECIMAL(4,2)), CAST('159.98' AS DECIMAL(5,2))),
+(6, 3, 'Ignition labor (hr)', 1, CAST('85.00' AS DECIMAL(4,2)), CAST('85.00' AS DECIMAL(4,2))),
+(7, 3, 'Spark plug', 4, CAST('8.99' AS DECIMAL(3,2)), CAST('35.96' AS DECIMAL(4,2))),
+(8, 4, 'Filter replacement labor', 1, CAST('25.00' AS DECIMAL(4,2)), CAST('25.00' AS DECIMAL(4,2))),
+(9, 4, 'Engine air filter', 1, CAST('16.99' AS DECIMAL(4,2)), CAST('16.99' AS DECIMAL(4,2)));
 
+INSERT INTO `PartsUsage` (`PartsUsageID`, `RepairID`, `PartID`, `RecordedByUserID`, `QuantityUsed`, `UnitSellingPriceAtTimeOfUse`, `UnitCostAtTimeOfUse`, `RecordedDateTime`) VALUES
+(1, 1, 1, 3, 1, CAST('9.99' AS DECIMAL(3,2)), CAST('4.50' AS DECIMAL(3,2)), CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(2, 2, 2, 4, 1, CAST('49.99' AS DECIMAL(4,2)), CAST('22.00' AS DECIMAL(4,2)), CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(3, 2, 3, 4, 2, CAST('79.99' AS DECIMAL(4,2)), CAST('35.00' AS DECIMAL(4,2)), CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(5, 3, 5, 3, 4, CAST('8.99' AS DECIMAL(3,2)), CAST('3.00' AS DECIMAL(3,2)), CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(6, 4, 4, 4, 1, CAST('16.99' AS DECIMAL(4,2)), CAST('6.00' AS DECIMAL(3,2)), CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(8, 7, 4, 4, 1, CAST('16.99' AS DECIMAL(4,2)), CAST('6.00' AS DECIMAL(3,2)), CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(9, 6, 2, 3, 1, CAST('49.99' AS DECIMAL(4,2)), CAST('22.00' AS DECIMAL(4,2)), CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(10, 6, 3, 3, 2, CAST('79.99' AS DECIMAL(4,2)), CAST('35.00' AS DECIMAL(4,2)), CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6))),
+(12, 10, 5, 4, 3, CAST('8.99' AS DECIMAL(3,2)), CAST('3.00' AS DECIMAL(3,2)), CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)));
 
--- =====================================================================
--- 6. REPAIRS (audited; created by the service advisor as Open)
--- =====================================================================
-INSERT INTO Repair (RepairID, AppointmentID, RepairDateTime, RepairType,
-                    RepairDescription, LaborHours, Status) VALUES
-    (1, 1, '2026-10-15 09:00:00', 'Oil Change',        'Drain and replace engine oil and filter',          0.50, 'Open'),
-    (2, 2, '2026-10-15 10:00:00', 'Brake Service',     'Replace front brake pads and rotors',              2.00, 'Open'),
-    (3, 3, '2026-10-15 13:00:00', 'Ignition Service',  'Replace spark plugs to correct misfire',           1.00, 'Open'),
-    (4, 4, '2026-09-20 10:00:00', 'Filter Replacement','Replace engine air filter',                        0.25, 'Open'),
-    (6, 6, '2026-10-16 09:00:00', 'Brake Service',     'Inspect brakes and replace front pads and rotors', 2.00, 'Open'),
-    (7, 7, '2026-10-16 10:00:00', 'Tune-Up',           'Replace air filter and spark plugs',               1.00, 'Open'),
-    (8, 8, '2026-11-03 14:00:00', 'Oil Change',        'Drain and replace engine oil and filter',          NULL, 'Open'),
-    (9, 9, '2026-11-04 09:00:00', 'Diagnostic',        'Scan codes and diagnose warning light',            NULL, 'Open');
+INSERT INTO `AuditLog` (`AuditLogID`, `UserID`, `Timestamp`, `Action`, `AffectedEntity`, `AffectedRecordID`, `PreviousValue`, `NewValue`, `ContextID`, `SessionAccount`, `ApplicationErrorID`, `ErrorClass`, `ErrorSQLSTATE`, `ErrorNumber`, `ErrorMessage`, `TransactionOutcome`) VALUES
+(1, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 1, NULL, JSON_OBJECT('Status', 'In Progress', 'VehicleID', 1, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-10 08:30:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-15 09:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Oil change'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(2, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 2, NULL, JSON_OBJECT('Status', 'In Progress', 'VehicleID', 2, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-10 09:00:00.000000' AS DATETIME(6)), 'EstimatedDuration', 120, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Grinding noise when braking'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(3, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 3, NULL, JSON_OBJECT('Status', 'In Progress', 'VehicleID', 3, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-11 10:15:00.000000' AS DATETIME(6)), 'EstimatedDuration', 90, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-15 13:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Check engine light, rough idle'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(4, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 4, NULL, JSON_OBJECT('Status', 'In Progress', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-09-15 14:00:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-09-20 10:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Engine air filter replacement'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(5, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 5, NULL, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 4, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-05 16:20:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-10 11:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Tire rotation'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(6, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 6, NULL, JSON_OBJECT('Status', 'In Progress', 'VehicleID', 5, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-12 11:00:00.000000' AS DATETIME(6)), 'EstimatedDuration', 120, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-16 09:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Brake inspection and pad replacement'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(7, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 7, NULL, JSON_OBJECT('Status', 'In Progress', 'VehicleID', 3, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-13 09:45:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-16 10:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Tune-up'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(8, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 8, NULL, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 4, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-14 13:00:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-11-03 14:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Oil change'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(9, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 9, NULL, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 2, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-14 15:30:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-11-04 09:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Diagnose dashboard warning light'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(10, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 10, NULL, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), 'EstimatedDuration', 45, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-11-05 11:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Replace wiper blades'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(11, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Cancel', 'ServiceAppointment', 5, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 4, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-05 16:20:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-10 11:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Tire rotation'), JSON_OBJECT('Status', 'Cancelled', 'VehicleID', 4, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', CAST('2026-10-08' AS DATE), 'CreationTimestamp', CAST('2026-10-05 16:20:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', 'Customer rescheduled with another shop', 'AppointmentDateTime', CAST('2026-10-10 11:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Tire rotation'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(12, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Repair', 1, NULL, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('0.50' AS DECIMAL(3,2)), 'RepairType', 'Oil Change', 'AppointmentID', 1, 'RepairDateTime', CAST('2026-10-15 09:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Drain and replace engine oil and filter', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(13, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Repair', 2, NULL, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('2.00' AS DECIMAL(3,2)), 'RepairType', 'Brake Service', 'AppointmentID', 2, 'RepairDateTime', CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace front brake pads and rotors', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(14, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Repair', 3, NULL, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Ignition Service', 'AppointmentID', 3, 'RepairDateTime', CAST('2026-10-15 13:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace spark plugs to correct misfire', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(15, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Repair', 4, NULL, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('0.25' AS DECIMAL(3,2)), 'RepairType', 'Filter Replacement', 'AppointmentID', 4, 'RepairDateTime', CAST('2026-09-20 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace engine air filter', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(16, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Repair', 6, NULL, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('2.00' AS DECIMAL(3,2)), 'RepairType', 'Brake Service', 'AppointmentID', 6, 'RepairDateTime', CAST('2026-10-16 09:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Inspect brakes and replace front pads and rotors', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(17, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Repair', 7, NULL, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Tune-Up', 'AppointmentID', 7, 'RepairDateTime', CAST('2026-10-16 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace air filter and spark plugs', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(18, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Repair', 8, NULL, JSON_OBJECT('Status', 'Open', 'LaborHours', NULL, 'RepairType', 'Oil Change', 'AppointmentID', 8, 'RepairDateTime', CAST('2026-11-03 14:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Drain and replace engine oil and filter', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(19, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Repair', 9, NULL, JSON_OBJECT('Status', 'Open', 'LaborHours', NULL, 'RepairType', 'Diagnostic', 'AppointmentID', 9, 'RepairDateTime', CAST('2026-11-04 09:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Scan codes and diagnose warning light', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(20, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'Repair', 1, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('0.50' AS DECIMAL(3,2)), 'RepairType', 'Oil Change', 'AppointmentID', 1, 'RepairDateTime', CAST('2026-10-15 09:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Drain and replace engine oil and filter', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('0.50' AS DECIMAL(3,2)), 'RepairType', 'Oil Change', 'AppointmentID', 1, 'RepairDateTime', CAST('2026-10-15 09:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Drain and replace engine oil and filter', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(21, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'Repair', 3, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Ignition Service', 'AppointmentID', 3, 'RepairDateTime', CAST('2026-10-15 13:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace spark plugs to correct misfire', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Ignition Service', 'AppointmentID', 3, 'RepairDateTime', CAST('2026-10-15 13:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace spark plugs to correct misfire', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(22, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'Repair', 6, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('2.00' AS DECIMAL(3,2)), 'RepairType', 'Brake Service', 'AppointmentID', 6, 'RepairDateTime', CAST('2026-10-16 09:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Inspect brakes and replace front pads and rotors', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('2.00' AS DECIMAL(3,2)), 'RepairType', 'Brake Service', 'AppointmentID', 6, 'RepairDateTime', CAST('2026-10-16 09:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Inspect brakes and replace front pads and rotors', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(23, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'Repair', 2, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('2.00' AS DECIMAL(3,2)), 'RepairType', 'Brake Service', 'AppointmentID', 2, 'RepairDateTime', CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace front brake pads and rotors', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('2.00' AS DECIMAL(3,2)), 'RepairType', 'Brake Service', 'AppointmentID', 2, 'RepairDateTime', CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace front brake pads and rotors', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(24, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'Repair', 4, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('0.25' AS DECIMAL(3,2)), 'RepairType', 'Filter Replacement', 'AppointmentID', 4, 'RepairDateTime', CAST('2026-09-20 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace engine air filter', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('0.25' AS DECIMAL(3,2)), 'RepairType', 'Filter Replacement', 'AppointmentID', 4, 'RepairDateTime', CAST('2026-09-20 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace engine air filter', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(25, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'Repair', 7, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Tune-Up', 'AppointmentID', 7, 'RepairDateTime', CAST('2026-10-16 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace air filter and spark plugs', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Tune-Up', 'AppointmentID', 7, 'RepairDateTime', CAST('2026-10-16 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace air filter and spark plugs', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(26, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'PartsUsage', 1, NULL, JSON_OBJECT('PartID', 1, 'RepairID', 1, 'QuantityUsed', 1, 'RecordedByUserID', 3, 'RecordedDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'UnitCostAtTimeOfUse', CAST('4.50' AS DECIMAL(3,2)), 'UnitSellingPriceAtTimeOfUse', CAST('9.99' AS DECIMAL(3,2))), 'f53729d2-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(27, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Inventory Adjustment', 'Part', 1, JSON_OBJECT('QuantityOnHand', 26), JSON_OBJECT('Reason', 'Parts usage for repair 1', 'QuantityOnHand', 25), 'f53729d2-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(28, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Complete', 'Repair', 1, JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('0.50' AS DECIMAL(3,2)), 'RepairType', 'Oil Change', 'AppointmentID', 1, 'RepairDateTime', CAST('2026-10-15 09:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Drain and replace engine oil and filter', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'Completed', 'LaborHours', CAST('0.50' AS DECIMAL(3,2)), 'RepairType', 'Oil Change', 'AppointmentID', 1, 'RepairDateTime', CAST('2026-10-15 09:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Drain and replace engine oil and filter', 'CompletionDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'CompletedByTechnicianID', 1), 'f53729d2-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(29, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'PartsUsage', 2, NULL, JSON_OBJECT('PartID', 2, 'RepairID', 2, 'QuantityUsed', 1, 'RecordedByUserID', 4, 'RecordedDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'UnitCostAtTimeOfUse', CAST('22.00' AS DECIMAL(4,2)), 'UnitSellingPriceAtTimeOfUse', CAST('49.99' AS DECIMAL(4,2))), 'f537478c-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(30, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'PartsUsage', 3, NULL, JSON_OBJECT('PartID', 3, 'RepairID', 2, 'QuantityUsed', 2, 'RecordedByUserID', 4, 'RecordedDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'UnitCostAtTimeOfUse', CAST('35.00' AS DECIMAL(4,2)), 'UnitSellingPriceAtTimeOfUse', CAST('79.99' AS DECIMAL(4,2))), 'f537478c-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(31, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Inventory Adjustment', 'Part', 2, JSON_OBJECT('QuantityOnHand', 9), JSON_OBJECT('Reason', 'Parts usage for repair 2', 'QuantityOnHand', 8), 'f537478c-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(32, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Inventory Adjustment', 'Part', 3, JSON_OBJECT('QuantityOnHand', 4), JSON_OBJECT('Reason', 'Parts usage for repair 2', 'QuantityOnHand', 2), 'f537478c-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(33, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Complete', 'Repair', 2, JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('2.00' AS DECIMAL(3,2)), 'RepairType', 'Brake Service', 'AppointmentID', 2, 'RepairDateTime', CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace front brake pads and rotors', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'Completed', 'LaborHours', CAST('2.00' AS DECIMAL(3,2)), 'RepairType', 'Brake Service', 'AppointmentID', 2, 'RepairDateTime', CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace front brake pads and rotors', 'CompletionDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'CompletedByTechnicianID', 2), 'f537478c-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(34, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'PartsUsage', 5, NULL, JSON_OBJECT('PartID', 5, 'RepairID', 3, 'QuantityUsed', 4, 'RecordedByUserID', 3, 'RecordedDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'UnitCostAtTimeOfUse', CAST('3.00' AS DECIMAL(3,2)), 'UnitSellingPriceAtTimeOfUse', CAST('8.99' AS DECIMAL(3,2))), 'f53763e8-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(35, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Inventory Adjustment', 'Part', 5, JSON_OBJECT('QuantityOnHand', 7), JSON_OBJECT('Reason', 'Parts usage for repair 3', 'QuantityOnHand', 3), 'f53763e8-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(36, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Complete', 'Repair', 3, JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Ignition Service', 'AppointmentID', 3, 'RepairDateTime', CAST('2026-10-15 13:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace spark plugs to correct misfire', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'Completed', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Ignition Service', 'AppointmentID', 3, 'RepairDateTime', CAST('2026-10-15 13:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace spark plugs to correct misfire', 'CompletionDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'CompletedByTechnicianID', 1), 'f53763e8-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(37, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'PartsUsage', 6, NULL, JSON_OBJECT('PartID', 4, 'RepairID', 4, 'QuantityUsed', 1, 'RecordedByUserID', 4, 'RecordedDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'UnitCostAtTimeOfUse', CAST('6.00' AS DECIMAL(3,2)), 'UnitSellingPriceAtTimeOfUse', CAST('16.99' AS DECIMAL(4,2))), 'f5377cc0-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(38, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Inventory Adjustment', 'Part', 4, JSON_OBJECT('QuantityOnHand', 16), JSON_OBJECT('Reason', 'Parts usage for repair 4', 'QuantityOnHand', 15), 'f5377cc0-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(39, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Complete', 'Repair', 4, JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('0.25' AS DECIMAL(3,2)), 'RepairType', 'Filter Replacement', 'AppointmentID', 4, 'RepairDateTime', CAST('2026-09-20 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace engine air filter', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'Completed', 'LaborHours', CAST('0.25' AS DECIMAL(3,2)), 'RepairType', 'Filter Replacement', 'AppointmentID', 4, 'RepairDateTime', CAST('2026-09-20 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace engine air filter', 'CompletionDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'CompletedByTechnicianID', 2), 'f5377cc0-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(40, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Complete', 'ServiceAppointment', 1, JSON_OBJECT('Status', 'In Progress', 'VehicleID', 1, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-10 08:30:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-15 09:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Oil change'), JSON_OBJECT('Status', 'Completed', 'VehicleID', 1, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-10 08:30:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-15 09:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Oil change'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(41, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Complete', 'ServiceAppointment', 2, JSON_OBJECT('Status', 'In Progress', 'VehicleID', 2, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-10 09:00:00.000000' AS DATETIME(6)), 'EstimatedDuration', 120, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Grinding noise when braking'), JSON_OBJECT('Status', 'Completed', 'VehicleID', 2, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-10 09:00:00.000000' AS DATETIME(6)), 'EstimatedDuration', 120, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-15 10:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Grinding noise when braking'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(42, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Complete', 'ServiceAppointment', 3, JSON_OBJECT('Status', 'In Progress', 'VehicleID', 3, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-11 10:15:00.000000' AS DATETIME(6)), 'EstimatedDuration', 90, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-15 13:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Check engine light, rough idle'), JSON_OBJECT('Status', 'Completed', 'VehicleID', 3, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-11 10:15:00.000000' AS DATETIME(6)), 'EstimatedDuration', 90, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-10-15 13:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Check engine light, rough idle'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(43, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Complete', 'ServiceAppointment', 4, JSON_OBJECT('Status', 'In Progress', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-09-15 14:00:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-09-20 10:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Engine air filter replacement'), JSON_OBJECT('Status', 'Completed', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-09-15 14:00:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-09-20 10:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Engine air filter replacement'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(44, 1, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Inventory Adjustment', 'Part', 4, JSON_OBJECT('QuantityOnHand', 15), JSON_OBJECT('Reason', 'Received supplier shipment of 10 air filters', 'QuantityOnHand', 25), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(45, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'RepairEstimate', 1, NULL, JSON_OBJECT('Status', 'Draft', 'TotalAmount', CAST('49.98' AS DECIMAL(4,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 1, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(46, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'RepairEstimate', 2, NULL, JSON_OBJECT('Status', 'Draft', 'TotalAmount', CAST('399.97' AS DECIMAL(5,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 2, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(47, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'RepairEstimate', 3, NULL, JSON_OBJECT('Status', 'Draft', 'TotalAmount', CAST('239.99' AS DECIMAL(5,2)), 'EstimateDate', CAST('2026-10-16' AS DATE), 'AppointmentID', 6, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(48, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'RepairEstimate', 4, NULL, JSON_OBJECT('Status', 'Draft', 'TotalAmount', CAST('130.96' AS DECIMAL(5,2)), 'EstimateDate', CAST('2026-10-16' AS DATE), 'AppointmentID', 7, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(49, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'EstimateLineItem', 1, NULL, JSON_OBJECT('Quantity', 1, 'LineTotal', CAST('39.99' AS DECIMAL(4,2)), 'UnitPrice', CAST('39.99' AS DECIMAL(4,2)), 'EstimateID', 1, 'LineNumber', 1, 'Description', 'Oil change labor'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(50, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'EstimateLineItem', 1, NULL, JSON_OBJECT('Quantity', 1, 'LineTotal', CAST('9.99' AS DECIMAL(3,2)), 'UnitPrice', CAST('9.99' AS DECIMAL(3,2)), 'EstimateID', 1, 'LineNumber', 2, 'Description', 'Oil filter'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(51, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'EstimateLineItem', 2, NULL, JSON_OBJECT('Quantity', 2, 'LineTotal', CAST('190.00' AS DECIMAL(5,2)), 'UnitPrice', CAST('95.00' AS DECIMAL(4,2)), 'EstimateID', 2, 'LineNumber', 1, 'Description', 'Brake service labor (hr)'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(52, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'EstimateLineItem', 2, NULL, JSON_OBJECT('Quantity', 1, 'LineTotal', CAST('49.99' AS DECIMAL(4,2)), 'UnitPrice', CAST('49.99' AS DECIMAL(4,2)), 'EstimateID', 2, 'LineNumber', 2, 'Description', 'Front brake pads'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(53, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'EstimateLineItem', 2, NULL, JSON_OBJECT('Quantity', 2, 'LineTotal', CAST('159.98' AS DECIMAL(5,2)), 'UnitPrice', CAST('79.99' AS DECIMAL(4,2)), 'EstimateID', 2, 'LineNumber', 3, 'Description', 'Brake rotor'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(54, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'EstimateLineItem', 3, NULL, JSON_OBJECT('Quantity', 2, 'LineTotal', CAST('190.00' AS DECIMAL(5,2)), 'UnitPrice', CAST('95.00' AS DECIMAL(4,2)), 'EstimateID', 3, 'LineNumber', 1, 'Description', 'Brake service labor (hr)'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(55, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'EstimateLineItem', 3, NULL, JSON_OBJECT('Quantity', 1, 'LineTotal', CAST('49.99' AS DECIMAL(4,2)), 'UnitPrice', CAST('49.99' AS DECIMAL(4,2)), 'EstimateID', 3, 'LineNumber', 2, 'Description', 'Front brake pads'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(56, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'EstimateLineItem', 4, NULL, JSON_OBJECT('Quantity', 1, 'LineTotal', CAST('95.00' AS DECIMAL(4,2)), 'UnitPrice', CAST('95.00' AS DECIMAL(4,2)), 'EstimateID', 4, 'LineNumber', 1, 'Description', 'Tune-up labor (hr)'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(57, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'EstimateLineItem', 4, NULL, JSON_OBJECT('Quantity', 4, 'LineTotal', CAST('35.96' AS DECIMAL(4,2)), 'UnitPrice', CAST('8.99' AS DECIMAL(3,2)), 'EstimateID', 4, 'LineNumber', 2, 'Description', 'Spark plug'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(58, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'RepairEstimate', 1, JSON_OBJECT('Status', 'Draft', 'TotalAmount', CAST('49.98' AS DECIMAL(4,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 1, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), JSON_OBJECT('Status', 'Pending Approval', 'TotalAmount', CAST('49.98' AS DECIMAL(4,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 1, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(59, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'RepairEstimate', 2, JSON_OBJECT('Status', 'Draft', 'TotalAmount', CAST('399.97' AS DECIMAL(5,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 2, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), JSON_OBJECT('Status', 'Pending Approval', 'TotalAmount', CAST('399.97' AS DECIMAL(5,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 2, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(60, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'RepairEstimate', 3, JSON_OBJECT('Status', 'Draft', 'TotalAmount', CAST('239.99' AS DECIMAL(5,2)), 'EstimateDate', CAST('2026-10-16' AS DATE), 'AppointmentID', 6, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), JSON_OBJECT('Status', 'Pending Approval', 'TotalAmount', CAST('239.99' AS DECIMAL(5,2)), 'EstimateDate', CAST('2026-10-16' AS DATE), 'AppointmentID', 6, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(61, 1, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Approve', 'RepairEstimate', 1, JSON_OBJECT('Status', 'Pending Approval', 'TotalAmount', CAST('49.98' AS DECIMAL(4,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 1, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), JSON_OBJECT('Status', 'Approved', 'TotalAmount', CAST('49.98' AS DECIMAL(4,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 1, 'CreatedByUserID', 2, 'ApprovalDateTime', CAST('2026-10-14 16:00:00.000000' AS DATETIME(6)), 'ApprovedByUserID', 1), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(62, 1, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Approve', 'RepairEstimate', 2, JSON_OBJECT('Status', 'Pending Approval', 'TotalAmount', CAST('399.97' AS DECIMAL(5,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 2, 'CreatedByUserID', 2, 'ApprovalDateTime', NULL, 'ApprovedByUserID', NULL), JSON_OBJECT('Status', 'Approved', 'TotalAmount', CAST('399.97' AS DECIMAL(5,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 2, 'CreatedByUserID', 2, 'ApprovalDateTime', CAST('2026-10-14 16:00:00.000000' AS DATETIME(6)), 'ApprovedByUserID', 1), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(63, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Finalize', 'RepairEstimate', 1, JSON_OBJECT('Status', 'Approved', 'TotalAmount', CAST('49.98' AS DECIMAL(4,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 1, 'CreatedByUserID', 2, 'ApprovalDateTime', CAST('2026-10-14 16:00:00.000000' AS DATETIME(6)), 'ApprovedByUserID', 1), JSON_OBJECT('Status', 'Finalized', 'TotalAmount', CAST('49.98' AS DECIMAL(4,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 1, 'CreatedByUserID', 2, 'ApprovalDateTime', CAST('2026-10-14 16:00:00.000000' AS DATETIME(6)), 'ApprovedByUserID', 1), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(64, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Finalize', 'RepairEstimate', 2, JSON_OBJECT('Status', 'Approved', 'TotalAmount', CAST('399.97' AS DECIMAL(5,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 2, 'CreatedByUserID', 2, 'ApprovalDateTime', CAST('2026-10-14 16:00:00.000000' AS DATETIME(6)), 'ApprovedByUserID', 1), JSON_OBJECT('Status', 'Finalized', 'TotalAmount', CAST('399.97' AS DECIMAL(5,2)), 'EstimateDate', CAST('2026-10-14' AS DATE), 'AppointmentID', 2, 'CreatedByUserID', 2, 'ApprovalDateTime', CAST('2026-10-14 16:00:00.000000' AS DATETIME(6)), 'ApprovedByUserID', 1), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(65, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Invoice', 1, NULL, JSON_OBJECT('Status', 'Draft', 'InvoiceDate', CAST('2026-10-15' AS DATE), 'TotalAmount', CAST('49.98' AS DECIMAL(4,2)), 'AppointmentID', 1, 'CreatedByUserID', 2, 'FinalizedByUserID', NULL, 'FinalizationDateTime', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(66, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Invoice', 2, NULL, JSON_OBJECT('Status', 'Draft', 'InvoiceDate', CAST('2026-10-15' AS DATE), 'TotalAmount', CAST('399.97' AS DECIMAL(5,2)), 'AppointmentID', 2, 'CreatedByUserID', 2, 'FinalizedByUserID', NULL, 'FinalizationDateTime', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(67, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Invoice', 3, NULL, JSON_OBJECT('Status', 'Draft', 'InvoiceDate', CAST('2026-10-15' AS DATE), 'TotalAmount', CAST('130.96' AS DECIMAL(5,2)), 'AppointmentID', 3, 'CreatedByUserID', 2, 'FinalizedByUserID', NULL, 'FinalizationDateTime', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(68, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Invoice', 4, NULL, JSON_OBJECT('Status', 'Draft', 'InvoiceDate', CAST('2026-09-20' AS DATE), 'TotalAmount', CAST('41.99' AS DECIMAL(4,2)), 'AppointmentID', 4, 'CreatedByUserID', 2, 'FinalizedByUserID', NULL, 'FinalizationDateTime', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(69, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'InvoiceLineItem', 1, NULL, JSON_OBJECT('Quantity', 1, 'InvoiceID', 1, 'LineTotal', CAST('39.99' AS DECIMAL(4,2)), 'UnitPrice', CAST('39.99' AS DECIMAL(4,2)), 'Description', 'Oil change labor'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(70, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'InvoiceLineItem', 2, NULL, JSON_OBJECT('Quantity', 1, 'InvoiceID', 1, 'LineTotal', CAST('9.99' AS DECIMAL(3,2)), 'UnitPrice', CAST('9.99' AS DECIMAL(3,2)), 'Description', 'Oil filter'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(71, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'InvoiceLineItem', 3, NULL, JSON_OBJECT('Quantity', 2, 'InvoiceID', 2, 'LineTotal', CAST('190.00' AS DECIMAL(5,2)), 'UnitPrice', CAST('95.00' AS DECIMAL(4,2)), 'Description', 'Brake service labor (hr)'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(72, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'InvoiceLineItem', 4, NULL, JSON_OBJECT('Quantity', 1, 'InvoiceID', 2, 'LineTotal', CAST('49.99' AS DECIMAL(4,2)), 'UnitPrice', CAST('49.99' AS DECIMAL(4,2)), 'Description', 'Front brake pads'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(73, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'InvoiceLineItem', 5, NULL, JSON_OBJECT('Quantity', 2, 'InvoiceID', 2, 'LineTotal', CAST('159.98' AS DECIMAL(5,2)), 'UnitPrice', CAST('79.99' AS DECIMAL(4,2)), 'Description', 'Brake rotor'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(74, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'InvoiceLineItem', 6, NULL, JSON_OBJECT('Quantity', 1, 'InvoiceID', 3, 'LineTotal', CAST('95.00' AS DECIMAL(4,2)), 'UnitPrice', CAST('95.00' AS DECIMAL(4,2)), 'Description', 'Ignition labor (hr)'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(75, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'InvoiceLineItem', 7, NULL, JSON_OBJECT('Quantity', 4, 'InvoiceID', 3, 'LineTotal', CAST('35.96' AS DECIMAL(4,2)), 'UnitPrice', CAST('8.99' AS DECIMAL(3,2)), 'Description', 'Spark plug'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(76, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'InvoiceLineItem', 8, NULL, JSON_OBJECT('Quantity', 1, 'InvoiceID', 4, 'LineTotal', CAST('25.00' AS DECIMAL(4,2)), 'UnitPrice', CAST('25.00' AS DECIMAL(4,2)), 'Description', 'Filter replacement labor'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(77, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'InvoiceLineItem', 9, NULL, JSON_OBJECT('Quantity', 1, 'InvoiceID', 4, 'LineTotal', CAST('16.99' AS DECIMAL(4,2)), 'UnitPrice', CAST('16.99' AS DECIMAL(4,2)), 'Description', 'Engine air filter'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(78, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Finalize', 'Invoice', 1, JSON_OBJECT('Status', 'Draft', 'InvoiceDate', CAST('2026-10-15' AS DATE), 'TotalAmount', CAST('49.98' AS DECIMAL(4,2)), 'AppointmentID', 1, 'CreatedByUserID', 2, 'FinalizedByUserID', NULL, 'FinalizationDateTime', NULL), JSON_OBJECT('Status', 'Finalized', 'InvoiceDate', CAST('2026-10-15' AS DATE), 'TotalAmount', CAST('49.98' AS DECIMAL(4,2)), 'AppointmentID', 1, 'CreatedByUserID', 2, 'FinalizedByUserID', 2, 'FinalizationDateTime', CAST('2026-10-15 11:30:00.000000' AS DATETIME(6))), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(79, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Finalize', 'Invoice', 4, JSON_OBJECT('Status', 'Draft', 'InvoiceDate', CAST('2026-09-20' AS DATE), 'TotalAmount', CAST('41.99' AS DECIMAL(4,2)), 'AppointmentID', 4, 'CreatedByUserID', 2, 'FinalizedByUserID', NULL, 'FinalizationDateTime', NULL), JSON_OBJECT('Status', 'Finalized', 'InvoiceDate', CAST('2026-09-20' AS DATE), 'TotalAmount', CAST('41.99' AS DECIMAL(4,2)), 'AppointmentID', 4, 'CreatedByUserID', 2, 'FinalizedByUserID', 2, 'FinalizationDateTime', CAST('2026-09-20 12:00:00.000000' AS DATETIME(6))), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(80, 1, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Finalize', 'Invoice', 2, JSON_OBJECT('Status', 'Draft', 'InvoiceDate', CAST('2026-10-15' AS DATE), 'TotalAmount', CAST('399.97' AS DECIMAL(5,2)), 'AppointmentID', 2, 'CreatedByUserID', 2, 'FinalizedByUserID', NULL, 'FinalizationDateTime', NULL), JSON_OBJECT('Status', 'Finalized', 'InvoiceDate', CAST('2026-10-15' AS DATE), 'TotalAmount', CAST('399.97' AS DECIMAL(5,2)), 'AppointmentID', 2, 'CreatedByUserID', 2, 'FinalizedByUserID', 1, 'FinalizationDateTime', CAST('2026-10-15 13:00:00.000000' AS DATETIME(6))), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(81, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'Repair', 6, NULL, JSON_OBJECT('Error', 'Insufficient parts inventory', 'Parts', JSON_ARRAY(JSON_OBJECT('qty', 5, 'partId', 3)), 'Procedure', 'sp_CompleteRepair', 'TechnicianID', 1), 'f53a03be-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(82, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'Repair', 6, NULL, JSON_OBJECT('Error', 'Each part needs an integer partId and a positive integer qty', 'Parts', JSON_ARRAY(JSON_OBJECT('qty', -2, 'partId', 2), JSON_OBJECT('qty', 5, 'partId', 2)), 'Procedure', 'sp_CompleteRepair', 'TechnicianID', 1), 'f53a16f6-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(83, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'Repair', 7, NULL, JSON_OBJECT('Error', 'Recording user is not authorized to complete this repair', 'Parts', JSON_ARRAY(JSON_OBJECT('qty', 1, 'partId', 4)), 'Procedure', 'sp_CompleteRepair', 'TechnicianID', 2), 'f53a1d90-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(84, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'Repair', 7, NULL, JSON_OBJECT('Error', 'Insufficient parts inventory', 'Parts', JSON_ARRAY(JSON_OBJECT('qty', 1, 'partId', 4), JSON_OBJECT('qty', 4, 'partId', 5)), 'Procedure', 'sp_CompleteRepair', 'TechnicianID', 2), 'f53a252e-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(85, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'ServiceAppointment', NULL, NULL, JSON_OBJECT('Error', 'Vehicle does not belong to the customer', 'Procedure', 'sp_CreateServiceAppointment', 'VehicleID', 1, 'CustomerID', 2, 'TechnicianID', 1, 'EstimatedDuration', 60, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 61 DAY), '08:00:00.000000')), 'f53a3e4c-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(86, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'ServiceAppointment', NULL, NULL, JSON_OBJECT('Error', 'Invalid appointment information', 'Procedure', 'sp_CreateServiceAppointment', 'VehicleID', 1, 'CustomerID', 1, 'TechnicianID', 2, 'EstimatedDuration', 1441, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 65 DAY), '08:00:00.000000')), 'f53a44b4-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(87, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'ServiceAppointment', NULL, NULL, JSON_OBJECT('Error', 'Invalid appointment information', 'Procedure', 'sp_CreateServiceAppointment', 'VehicleID', 1, 'CustomerID', 1, 'TechnicianID', 2, 'EstimatedDuration', 0, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 65 DAY), '08:00:00.000000')), 'f53a491e-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(88, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'Repair', 6, NULL, JSON_OBJECT('Error', 'Each part needs an integer partId and a positive integer qty', 'Parts', JSON_ARRAY(JSON_OBJECT('qty', 0, 'partId', 2)), 'Procedure', 'sp_CompleteRepair', 'TechnicianID', 1), 'f53a4d6a-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(91, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'Repair', 6, NULL, JSON_OBJECT('Error', 'Insufficient parts inventory', 'Parts', JSON_ARRAY(JSON_OBJECT('qty', 5, 'partId', 3)), 'Procedure', 'sp_CompleteRepair', 'TechnicianID', 1), 'f53a6aca-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(92, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 11, NULL, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 5, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 90, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 60 DAY), '08:00:00.000000'), 'ServiceRequestDescription', 'Test: 30,000-mile service'), 'f53a887a-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(93, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'ServiceAppointment', NULL, NULL, JSON_OBJECT('Error', 'Vehicle already has a conflicting appointment', 'Procedure', 'sp_CreateServiceAppointment', 'VehicleID', 5, 'CustomerID', 1, 'TechnicianID', 2, 'EstimatedDuration', 60, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 60 DAY), '08:30:00.000000')), 'f53a94e6-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(94, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'ServiceAppointment', NULL, NULL, JSON_OBJECT('Error', 'Technician already has a conflicting appointment', 'Procedure', 'sp_CreateServiceAppointment', 'VehicleID', 2, 'CustomerID', 2, 'TechnicianID', 1, 'EstimatedDuration', 60, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 60 DAY), '08:30:00.000000')), 'f53a9c8e-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(95, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 12, NULL, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 1, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 62 DAY), '08:00:00.000000'), 'ServiceRequestDescription', 'Boundary test: 1 minute'), 'f53aa51c-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(96, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 13, NULL, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 1440, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 63 DAY), '08:00:00.000000'), 'ServiceRequestDescription', 'Boundary test: 24 hours'), 'f53aaf30-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(97, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'ServiceAppointment', NULL, NULL, JSON_OBJECT('Error', 'Vehicle already has a conflicting appointment', 'Procedure', 'sp_CreateServiceAppointment', 'VehicleID', 5, 'CustomerID', 1, 'TechnicianID', 1, 'EstimatedDuration', 60, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 60 DAY), '09:29:00.000000')), 'f53ab8e0-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(98, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 14, NULL, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 5, 'TechnicianID', 1, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 60 DAY), '09:30:00.000000'), 'ServiceRequestDescription', 'Boundary test: back to back'), 'f53abf34-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(99, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Reschedule', 'ServiceAppointment', 8, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 4, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-14 13:00:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-11-03 14:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Oil change'), JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 4, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST('2026-10-14 13:00:00.000000' AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', CAST('2026-11-03 15:00:00.000000' AS DATETIME(6)), 'ServiceRequestDescription', 'Oil change'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(100, 1, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Inventory Adjustment', 'Part', 1, JSON_OBJECT('QuantityOnHand', 25), JSON_OBJECT('Reason', 'Cycle count correction', 'QuantityOnHand', 30), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(101, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'PartsUsage', 8, NULL, JSON_OBJECT('PartID', 4, 'RepairID', 7, 'QuantityUsed', 1, 'RecordedByUserID', 4, 'RecordedDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'UnitCostAtTimeOfUse', CAST('6.00' AS DECIMAL(3,2)), 'UnitSellingPriceAtTimeOfUse', CAST('16.99' AS DECIMAL(4,2))), 'f53ae4fa-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(102, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Inventory Adjustment', 'Part', 4, JSON_OBJECT('QuantityOnHand', 25), JSON_OBJECT('Reason', 'Parts usage for repair 7', 'QuantityOnHand', 24), 'f53ae4fa-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(103, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Complete', 'Repair', 7, JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Tune-Up', 'AppointmentID', 7, 'RepairDateTime', CAST('2026-10-16 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace air filter and spark plugs', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'Completed', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Tune-Up', 'AppointmentID', 7, 'RepairDateTime', CAST('2026-10-16 10:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Replace air filter and spark plugs', 'CompletionDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'CompletedByTechnicianID', 2), 'f53ae4fa-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(104, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'PartsUsage', 9, NULL, JSON_OBJECT('PartID', 2, 'RepairID', 6, 'QuantityUsed', 1, 'RecordedByUserID', 3, 'RecordedDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'UnitCostAtTimeOfUse', CAST('22.00' AS DECIMAL(4,2)), 'UnitSellingPriceAtTimeOfUse', CAST('49.99' AS DECIMAL(4,2))), 'f53b0476-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(105, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'PartsUsage', 10, NULL, JSON_OBJECT('PartID', 3, 'RepairID', 6, 'QuantityUsed', 2, 'RecordedByUserID', 3, 'RecordedDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'UnitCostAtTimeOfUse', CAST('35.00' AS DECIMAL(4,2)), 'UnitSellingPriceAtTimeOfUse', CAST('79.99' AS DECIMAL(4,2))), 'f53b0476-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(106, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Inventory Adjustment', 'Part', 2, JSON_OBJECT('QuantityOnHand', 8), JSON_OBJECT('Reason', 'Parts usage for repair 6', 'QuantityOnHand', 7), 'f53b0476-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(107, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Inventory Adjustment', 'Part', 3, JSON_OBJECT('QuantityOnHand', 2), JSON_OBJECT('Reason', 'Parts usage for repair 6', 'QuantityOnHand', 0), 'f53b0476-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(108, 3, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Complete', 'Repair', 6, JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('2.00' AS DECIMAL(3,2)), 'RepairType', 'Brake Service', 'AppointmentID', 6, 'RepairDateTime', CAST('2026-10-16 09:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Inspect brakes and replace front pads and rotors', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'Completed', 'LaborHours', CAST('2.00' AS DECIMAL(3,2)), 'RepairType', 'Brake Service', 'AppointmentID', 6, 'RepairDateTime', CAST('2026-10-16 09:00:00.000000' AS DATETIME(6)), 'RepairDescription', 'Inspect brakes and replace front pads and rotors', 'CompletionDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'CompletedByTechnicianID', 1), 'f53b0476-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(109, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Update', 'InvoiceLineItem', 6, JSON_OBJECT('Quantity', 1, 'InvoiceID', 3, 'LineTotal', CAST('95.00' AS DECIMAL(4,2)), 'UnitPrice', CAST('95.00' AS DECIMAL(4,2)), 'Description', 'Ignition labor (hr)'), JSON_OBJECT('Quantity', 1, 'InvoiceID', 3, 'LineTotal', CAST('85.00' AS DECIMAL(4,2)), 'UnitPrice', CAST('85.00' AS DECIMAL(4,2)), 'Description', 'Ignition labor (hr)'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(110, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 15, NULL, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'ServiceRequestDescription', 'Boundary test: all spark plugs'), 'f53b3112-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(111, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'ServiceAppointment', 15, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'ServiceRequestDescription', 'Boundary test: all spark plugs'), JSON_OBJECT('Status', 'Checked In', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'ServiceRequestDescription', 'Boundary test: all spark plugs'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(112, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'ServiceAppointment', 15, JSON_OBJECT('Status', 'Checked In', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'ServiceRequestDescription', 'Boundary test: all spark plugs'), JSON_OBJECT('Status', 'In Progress', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'ServiceRequestDescription', 'Boundary test: all spark plugs'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(113, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Repair', 10, NULL, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Ignition Service', 'AppointmentID', 15, 'RepairDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'RepairDescription', 'Replace all spark plugs', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(114, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'Repair', 10, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Ignition Service', 'AppointmentID', 15, 'RepairDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'RepairDescription', 'Replace all spark plugs', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Ignition Service', 'AppointmentID', 15, 'RepairDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'RepairDescription', 'Replace all spark plugs', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(115, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'PartsUsage', 12, NULL, JSON_OBJECT('PartID', 5, 'RepairID', 10, 'QuantityUsed', 3, 'RecordedByUserID', 4, 'RecordedDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'UnitCostAtTimeOfUse', CAST('3.00' AS DECIMAL(3,2)), 'UnitSellingPriceAtTimeOfUse', CAST('8.99' AS DECIMAL(3,2))), 'f53b55a2-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(116, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Inventory Adjustment', 'Part', 5, JSON_OBJECT('QuantityOnHand', 3), JSON_OBJECT('Reason', 'Parts usage for repair 10', 'QuantityOnHand', 0), 'f53b55a2-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(117, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Complete', 'Repair', 10, JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Ignition Service', 'AppointmentID', 15, 'RepairDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'RepairDescription', 'Replace all spark plugs', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'Completed', 'LaborHours', CAST('1.00' AS DECIMAL(3,2)), 'RepairType', 'Ignition Service', 'AppointmentID', 15, 'RepairDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 66 DAY), '08:00:00.000000'), 'RepairDescription', 'Replace all spark plugs', 'CompletionDateTime', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'CompletedByTechnicianID', 2), 'f53b55a2-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(118, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'ServiceAppointment', 16, NULL, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 67 DAY), '08:00:00.000000'), 'ServiceRequestDescription', 'Appointment status test'), 'f53b6e48-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(119, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'ServiceAppointment', 16, JSON_OBJECT('Status', 'Scheduled', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 67 DAY), '08:00:00.000000'), 'ServiceRequestDescription', 'Appointment status test'), JSON_OBJECT('Status', 'Checked In', 'VehicleID', 1, 'TechnicianID', 2, 'CreatedByUserID', 2, 'CancellationDate', NULL, 'CreationTimestamp', CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'EstimatedDuration', 60, 'CancellationReason', NULL, 'AppointmentDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 67 DAY), '08:00:00.000000'), 'ServiceRequestDescription', 'Appointment status test'), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(120, 2, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Create', 'Repair', 11, NULL, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('0.50' AS DECIMAL(3,2)), 'RepairType', 'Diagnostic', 'AppointmentID', 16, 'RepairDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 67 DAY), '08:00:00.000000'), 'RepairDescription', 'Status test', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(121, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Status Change', 'Repair', 11, JSON_OBJECT('Status', 'Open', 'LaborHours', CAST('0.50' AS DECIMAL(3,2)), 'RepairType', 'Diagnostic', 'AppointmentID', 16, 'RepairDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 67 DAY), '08:00:00.000000'), 'RepairDescription', 'Status test', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), JSON_OBJECT('Status', 'In Progress', 'LaborHours', CAST('0.50' AS DECIMAL(3,2)), 'RepairType', 'Diagnostic', 'AppointmentID', 16, 'RepairDateTime', TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 67 DAY), '08:00:00.000000'), 'RepairDescription', 'Status test', 'CompletionDateTime', NULL, 'CompletedByTechnicianID', NULL), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(122, 4, CAST(DATE_ADD(@fixture_clock, INTERVAL -2 SECOND) AS DATETIME(6)), 'Rejected', 'Repair', 11, NULL, JSON_OBJECT('Error', 'Appointment must be In Progress to complete a repair', 'Parts', NULL, 'Procedure', 'sp_CompleteRepair', 'TechnicianID', 2), 'f53b86bc-e698-11f1-8240-f1499b2c0bb1', NULL, NULL, NULL, NULL, NULL, NULL, NULL);
 
--- Technicians start their own repairs (Open -> In Progress).
--- The ownership check in trg_Repair_Status_Validate_bu applies here.
-SET @app_user_id = 3;   -- Ben Carter, Technician 1
-UPDATE Repair SET Status = 'In Progress' WHERE RepairID IN (1, 3, 6);
+INSERT INTO `DatabasePrincipal` (`SessionAccount`, `PrincipalType`, `UserID`) VALUES
+('mgr_mike@localhost', 'Person', 1),
+('sa_amy@localhost', 'Person', 2),
+('tech_ben@localhost', 'Person', 3),
+('tech_carla@localhost', 'Person', 4);
 
-SET @app_user_id = 4;   -- Carla Diaz, Technician 2
-UPDATE Repair SET Status = 'In Progress' WHERE RepairID IN (2, 4, 7);
+INSERT INTO `RoleProcedurePermission` (`RoleType`, `ProcedureName`) VALUES
+('Manager', 'sp_CompleteRepair'),
+('Manager', 'sp_CreateServiceAppointment'),
+('Service Advisor', 'sp_CreateServiceAppointment'),
+('Technician', 'sp_CompleteRepair');
 
+SET timestamp = 0;
 
--- =====================================================================
--- 7. COMPLETE HISTORICAL REPAIRS THROUGH sp_CompleteRepair
--- Each call records parts usage, reduces inventory, completes the repair,
--- and writes audit rows. The procedure sets and clears @app_user_id itself.
--- =====================================================================
-CALL sp_CompleteRepair(1, 1, 3, '[{"partId": 1, "qty": 1}]');
-CALL sp_CompleteRepair(2, 2, 4, '[{"partId": 2, "qty": 1}, {"partId": 3, "qty": 2}]');
-CALL sp_CompleteRepair(3, 1, 3, '[{"partId": 5, "qty": 4}]');
-CALL sp_CompleteRepair(4, 2, 4, '[{"partId": 4, "qty": 1}]');
+SET @history_snapshot_at = UTC_TIMESTAMP(6);
 
--- Close the completed appointments (In Progress -> Completed)
-SET @app_user_id = 2;   -- Amy Lee, Service Advisor
-UPDATE ServiceAppointment SET Status = 'Completed' WHERE AppointmentID IN (1, 2, 3, 4);
+INSERT INTO `CustomerHistory` (`CustomerID`, `Name`, `Phone`, `Email`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `CustomerID`, `Name`, `Phone`, `Email`, 1, @history_snapshot_at, 'Snapshot' FROM `Customer`;
 
+INSERT INTO `VehicleHistory` (`VehicleID`, `CustomerID`, `VIN`, `Make`, `Model`, `Year`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `VehicleID`, `CustomerID`, `VIN`, `Make`, `Model`, `Year`, 1, @history_snapshot_at, 'Snapshot' FROM `Vehicle`;
 
--- =====================================================================
--- 8. MANUAL INVENTORY ADJUSTMENT (audited with a reason)
--- =====================================================================
-SET @app_user_id = 1;   -- Mike Johnson, Manager
-SET @adj_reason  = 'Received supplier shipment of 10 air filters';
+INSERT INTO `TechnicianHistory` (`TechnicianID`, `Name`, `Phone`, `Email`, `ActiveStatus`, `ActiveIndicator`, `ActiveCode`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `TechnicianID`, `Name`, `Phone`, `Email`, `ActiveStatus`, `ActiveIndicator`, `ActiveCode`, 1, @history_snapshot_at, 'Snapshot' FROM `Technician`;
 
-UPDATE Part SET QuantityOnHand = QuantityOnHand + 10 WHERE PartID = 4;
+INSERT INTO `PartHistory` (`PartID`, `PartNumber`, `PartName`, `QuantityOnHand`, `UnitCost`, `UnitSellingPrice`, `MinimumInventoryLevel`, `ActiveStatus`, `ActiveIndicator`, `ActiveCode`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `PartID`, `PartNumber`, `PartName`, `QuantityOnHand`, `UnitCost`, `UnitSellingPrice`, `MinimumInventoryLevel`, `ActiveStatus`, `ActiveIndicator`, `ActiveCode`, 1, @history_snapshot_at, 'Snapshot' FROM `Part`;
 
-SET @adj_reason = NULL;
+INSERT INTO `UserAccountHistory` (`UserID`, `Username`, `Name`, `RoleType`, `TechnicianID`, `RoleIndicator`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `UserID`, `Username`, `Name`, `RoleType`, `TechnicianID`, `RoleIndicator`, 1, @history_snapshot_at, 'Snapshot' FROM `UserAccount`;
 
+INSERT INTO `ServiceAppointmentHistory` (`AppointmentID`, `VehicleID`, `TechnicianID`, `CreatedByUserID`, `AppointmentDateTime`, `Status`, `ServiceRequestDescription`, `EstimatedDuration`, `CreationTimestamp`, `CancellationDate`, `CancellationReason`, `StatusIndicator`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `AppointmentID`, `VehicleID`, `TechnicianID`, `CreatedByUserID`, `AppointmentDateTime`, `Status`, `ServiceRequestDescription`, `EstimatedDuration`, `CreationTimestamp`, `CancellationDate`, `CancellationReason`, `StatusIndicator`, 1, @history_snapshot_at, 'Snapshot' FROM `ServiceAppointment`;
 
--- =====================================================================
--- 9. REPAIR ESTIMATES (audited)
--- Inserted as Draft, given line items, then moved through the FRD
--- transitions. Approval is performed by the Manager.
--- =====================================================================
-SET @app_user_id = 2;   -- Amy Lee, Service Advisor
+INSERT INTO `RepairHistory` (`RepairID`, `AppointmentID`, `CompletedByTechnicianID`, `RepairDateTime`, `RepairType`, `RepairDescription`, `LaborHours`, `Status`, `CompletionDateTime`, `StatusIndicator`, `TypeIndicator`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `RepairID`, `AppointmentID`, `CompletedByTechnicianID`, `RepairDateTime`, `RepairType`, `RepairDescription`, `LaborHours`, `Status`, `CompletionDateTime`, `StatusIndicator`, `TypeIndicator`, 1, @history_snapshot_at, 'Snapshot' FROM `Repair`;
 
-INSERT INTO RepairEstimate (EstimateID, AppointmentID, CreatedByUserID, EstimateDate,
-                            Status, TotalAmount) VALUES
-    (1, 1, 2, '2026-10-14', 'Draft',  49.98),
-    (2, 2, 2, '2026-10-14', 'Draft', 399.97),
-    (3, 6, 2, '2026-10-16', 'Draft', 239.99),
-    (4, 7, 2, '2026-10-16', 'Draft', 130.96);
+INSERT INTO `RepairEstimateHistory` (`EstimateID`, `AppointmentID`, `CreatedByUserID`, `ApprovedByUserID`, `EstimateDate`, `Status`, `TotalAmount`, `ApprovalDateTime`, `StatusIndicator`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `EstimateID`, `AppointmentID`, `CreatedByUserID`, `ApprovedByUserID`, `EstimateDate`, `Status`, `TotalAmount`, `ApprovalDateTime`, `StatusIndicator`, 1, @history_snapshot_at, 'Snapshot' FROM `RepairEstimate`;
 
-INSERT INTO EstimateLineItem (EstimateID, LineNumber, Description, Quantity, UnitPrice, LineTotal) VALUES
-    (1, 1, 'Oil change labor',         1, 39.99,  39.99),
-    (1, 2, 'Oil filter',               1,  9.99,   9.99),
-    (2, 1, 'Brake service labor (hr)', 2, 95.00, 190.00),
-    (2, 2, 'Front brake pads',         1, 49.99,  49.99),
-    (2, 3, 'Brake rotor',              2, 79.99, 159.98),
-    (3, 1, 'Brake service labor (hr)', 2, 95.00, 190.00),
-    (3, 2, 'Front brake pads',         1, 49.99,  49.99),
-    (4, 1, 'Tune-up labor (hr)',       1, 95.00,  95.00),
-    (4, 2, 'Spark plug',               4,  8.99,  35.96);
+INSERT INTO `EstimateLineItemHistory` (`EstimateID`, `LineNumber`, `Description`, `Quantity`, `UnitPrice`, `LineTotal`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `EstimateID`, `LineNumber`, `Description`, `Quantity`, `UnitPrice`, `LineTotal`, 1, @history_snapshot_at, 'Snapshot' FROM `EstimateLineItem`;
 
--- Submit estimates 1-3 for approval (Draft -> Pending Approval)
-UPDATE RepairEstimate SET Status = 'Pending Approval' WHERE EstimateID IN (1, 2, 3);
+INSERT INTO `InvoiceHistory` (`InvoiceID`, `AppointmentID`, `CreatedByUserID`, `FinalizedByUserID`, `InvoiceDate`, `Status`, `TotalAmount`, `FinalizationDateTime`, `StatusIndicator`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `InvoiceID`, `AppointmentID`, `CreatedByUserID`, `FinalizedByUserID`, `InvoiceDate`, `Status`, `TotalAmount`, `FinalizationDateTime`, `StatusIndicator`, 1, @history_snapshot_at, 'Snapshot' FROM `Invoice`;
 
--- Manager approves estimates 1 and 2 (Pending Approval -> Approved)
-SET @app_user_id = 1;   -- Mike Johnson, Manager
-UPDATE RepairEstimate
-SET Status = 'Approved',
-    ApprovedByUserID = 1,
-    ApprovalDateTime = '2026-10-14 16:00:00'
-WHERE EstimateID IN (1, 2);
+INSERT INTO `InvoiceLineItemHistory` (`InvoiceLineItemID`, `InvoiceID`, `Description`, `Quantity`, `UnitPrice`, `LineTotal`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `InvoiceLineItemID`, `InvoiceID`, `Description`, `Quantity`, `UnitPrice`, `LineTotal`, 1, @history_snapshot_at, 'Snapshot' FROM `InvoiceLineItem`;
 
--- Advisor finalizes the approved estimates (Approved -> Finalized)
-SET @app_user_id = 2;   -- Amy Lee, Service Advisor
-UPDATE RepairEstimate SET Status = 'Finalized' WHERE EstimateID IN (1, 2);
+INSERT INTO `PartsUsageHistory` (`PartsUsageID`, `RepairID`, `PartID`, `RecordedByUserID`, `QuantityUsed`, `UnitSellingPriceAtTimeOfUse`, `UnitCostAtTimeOfUse`, `RecordedDateTime`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `PartsUsageID`, `RepairID`, `PartID`, `RecordedByUserID`, `QuantityUsed`, `UnitSellingPriceAtTimeOfUse`, `UnitCostAtTimeOfUse`, `RecordedDateTime`, 1, @history_snapshot_at, 'Snapshot' FROM `PartsUsage`;
 
--- Estimate 3 stays Pending Approval; estimate 4 stays Draft.
+INSERT INTO `IndicatorValueHistory` (`IndicatorName`, `ValueCode`, `Description`, `DisplayOrder`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `IndicatorName`, `ValueCode`, `Description`, `DisplayOrder`, 1, @history_snapshot_at, 'Snapshot' FROM `IndicatorValue`;
 
+INSERT INTO `UserRolePolicyHistory` (`RoleType`, `RequiresTechnician`, `RoleIndicator`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `RoleType`, `RequiresTechnician`, `RoleIndicator`, 1, @history_snapshot_at, 'Snapshot' FROM `UserRolePolicy`;
 
--- =====================================================================
--- 10. INVOICES (audited)
--- Inserted as Draft, given line items, then finalized.
--- =====================================================================
-SET @app_user_id = 2;   -- Amy Lee, Service Advisor
+INSERT INTO `DatabasePrincipalHistory` (`SessionAccount`, `PrincipalType`, `UserID`, `TypeIndicator`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `SessionAccount`, `PrincipalType`, `UserID`, `TypeIndicator`, 1, @history_snapshot_at, 'Snapshot' FROM `DatabasePrincipal`;
 
-INSERT INTO Invoice (InvoiceID, AppointmentID, CreatedByUserID, InvoiceDate,
-                     Status, TotalAmount) VALUES
-    (1, 1, 2, '2026-10-15', 'Draft',  49.98),
-    (2, 2, 2, '2026-10-15', 'Draft', 399.97),
-    (3, 3, 2, '2026-10-15', 'Draft', 130.96),
-    (4, 4, 2, '2026-09-20', 'Draft',  41.99);
+INSERT INTO `RoleProcedurePermissionHistory` (`RoleType`, `ProcedureName`, `RoleIndicator`, `ProcedureIndicator`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `RoleType`, `ProcedureName`, `RoleIndicator`, `ProcedureIndicator`, 1, @history_snapshot_at, 'Snapshot' FROM `RoleProcedurePermission`;
 
-INSERT INTO InvoiceLineItem (InvoiceID, Description, Quantity, UnitPrice, LineTotal) VALUES
-    (1, 'Oil change labor',         1, 39.99,  39.99),
-    (1, 'Oil filter',               1,  9.99,   9.99),
-    (2, 'Brake service labor (hr)', 2, 95.00, 190.00),
-    (2, 'Front brake pads',         1, 49.99,  49.99),
-    (2, 'Brake rotor',              2, 79.99, 159.98),
-    (3, 'Ignition labor (hr)',      1, 95.00,  95.00),
-    (3, 'Spark plug',               4,  8.99,  35.96),
-    (4, 'Filter replacement labor', 1, 25.00,  25.00),
-    (4, 'Engine air filter',        1, 16.99,  16.99);
+INSERT INTO `PrincipalDelegationHistory` (`SessionAccount`, `UserID`, `ProcedureName`, `ProcedureIndicator`, HistoryVersion, HistoryRecordedAt, HistoryOrigin)
+SELECT `SessionAccount`, `UserID`, `ProcedureName`, `ProcedureIndicator`, 1, @history_snapshot_at, 'Snapshot' FROM `PrincipalDelegation`;
 
--- Advisor finalizes invoices 1 and 4 (Draft -> Finalized)
-UPDATE Invoice
-SET Status = 'Finalized', FinalizedByUserID = 2, FinalizationDateTime = '2026-10-15 11:30:00'
-WHERE InvoiceID = 1;
+SET @fixture_clock = NULL;
 
-UPDATE Invoice
-SET Status = 'Finalized', FinalizedByUserID = 2, FinalizationDateTime = '2026-09-20 12:00:00'
-WHERE InvoiceID = 4;
-
--- Manager finalizes invoice 2
-SET @app_user_id = 1;   -- Mike Johnson, Manager
-UPDATE Invoice
-SET Status = 'Finalized', FinalizedByUserID = 1, FinalizationDateTime = '2026-10-15 13:00:00'
-WHERE InvoiceID = 2;
-
--- Invoice 3 stays Draft.
-
-
--- =====================================================================
--- 11. CLEAN UP SESSION VARIABLES
--- =====================================================================
-SET @app_user_id = NULL;
-SET @adj_reason  = NULL;
-
-
--- =====================================================================
--- 12. LOAD SUMMARY
--- =====================================================================
-SELECT 'Customer' AS TableName, COUNT(*) AS RowsLoaded FROM Customer
-UNION ALL SELECT 'Vehicle',            COUNT(*) FROM Vehicle
-UNION ALL SELECT 'Technician',         COUNT(*) FROM Technician
-UNION ALL SELECT 'UserAccount',        COUNT(*) FROM UserAccount
-UNION ALL SELECT 'Part',               COUNT(*) FROM Part
-UNION ALL SELECT 'ServiceAppointment', COUNT(*) FROM ServiceAppointment
-UNION ALL SELECT 'Repair',             COUNT(*) FROM Repair
-UNION ALL SELECT 'PartsUsage',         COUNT(*) FROM PartsUsage
-UNION ALL SELECT 'RepairEstimate',     COUNT(*) FROM RepairEstimate
-UNION ALL SELECT 'EstimateLineItem',   COUNT(*) FROM EstimateLineItem
-UNION ALL SELECT 'Invoice',            COUNT(*) FROM Invoice
-UNION ALL SELECT 'InvoiceLineItem',    COUNT(*) FROM InvoiceLineItem
-UNION ALL SELECT 'AuditLog',           COUNT(*) FROM AuditLog;
+SET @history_snapshot_at = NULL;

@@ -235,7 +235,7 @@ DELIMITER ;
         appointment = self.book()
         repair = self.open_repair(appointment)
         self.actor('tech_ben', f"UPDATE vw_MyRepairs SET Status = 'In Progress' WHERE RepairID = {repair};")
-        migration = (self.fixture / 'sql/migrations/006_standardized_error_handling.sql').read_text()
+        migration = (self.fixture / 'sql/04_procedures.sql').read_text()
         procedure = re.search(r'CREATE PROCEDURE sp_CompleteRepair\([\s\S]*?\nEND //', migration)[0]
         marker = '    -- Reject any non-array JSON, including {}'
         self.assertEqual(procedure.count(marker), 1)

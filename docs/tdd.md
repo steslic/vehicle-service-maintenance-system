@@ -8,11 +8,13 @@
 | Prepared by    | Sebastian Teslic                                  |
 | Course/section | 01:198:437                                        |
 | Date           | 10/25/2026                                        |
-| Version        | 1.7                                               |
+| Version        | 1.8                                               |
 
 The detailed table specifications below describe the original business baseline. Schema versions 3 and 4 add reference metadata, verified session identities, and provenance invariants. Their current design and validation contracts are documented in [Reference values, identity, and provenance](reference-and-identity.md); the baseline specifications and historical test results are retained for traceability. Schema version 5 adds mirrored temporal history for all 12 business tables and five durable reference/security tables; see [Temporal history and audit trail](temporal-audit.md) for the current audit design and coverage matrix.
 
-Schema version 6 standardizes the deployed error contract and adds six nullable diagnostic columns to AuditLog. It preserves all earlier records, public signatures, temporal guards, trigger ordering, and native grants. [Error handling](error-handling.md) is the current specification for all 37 stable identifiers, native failure classification, caller actions, warning/retry semantics, and regression coverage. The complete disposable-server regression suite now contains 104 tests; original SQL acceptance results below remain historical baseline evidence.
+Schema version 6 standardizes the deployed error contract and adds six nullable diagnostic columns to AuditLog. It preserves all earlier records, public signatures, temporal guards, trigger ordering, and native grants. [Error handling](error-handling.md) is the current specification for all 37 stable identifiers, native failure classification, caller actions, warning/retry semantics, and regression coverage. The disposable-server regression suite retains those 104 tests and adds 21 consolidation regressions; original SQL acceptance results below remain historical baseline evidence.
+
+The current fresh-installation source is consolidated SQL files 01–08, equivalent to the tagged migration-based version 006. Original baseline files are frozen under `sql/legacy/v001/`, and existing databases retain their original upgrade path. Covered migrations have explicit baseline provenance and NULL execution timestamps. See [SQL consolidation](sql-consolidation.md) for file ownership, build phases, sample initialization, and regression evidence.
 
 ## 2. Design overview
 
@@ -609,7 +611,7 @@ ORDER BY AuditLogID DESC;
 
 ## 13. Test plan and acceptance criteria
 
-Automated tests are in `07_tests.sql` and run as part of `build.sql`. Expected rejections are caught and checked against the expected error message, so a test passes only if it fails for the right reason. Tests run in three groups (read-only reports, rejected operations, then operations that change data) so that no test alters data another test depends on. T-11 is run manually because MySQL privileges apply to the logged-in account. The original 66 SQL acceptance checks run before numbered upgrades (65 plus one skip without optional demo accounts). The complete Python suite exercises the upgraded schema and includes all existing 64 regressions plus 20 temporal tests in `tests/test_temporal_history.py`; it runs only private disposable servers, with no manual password input. Current execution evidence is retained in `logs/temporal-audit-regression-results.txt`.
+The original 66 SQL acceptance checks are preserved in `sql/legacy/v001/07_tests.sql` and run before numbered upgrades in the historical profile (65 plus one skip without optional demo accounts). Current `sql/07_tests.sql` contains 41 read-only business-state/fixture assertions and a failure gate. The Python suite retains all 104 original tests, adds 21 consolidation regressions, and exercises current workflows under real registered actors on private disposable servers. The cross-path tests compare the tagged release with the consolidated build, including schema/security metadata, complete fixture payloads, upgrades, and the same new booking/repair workflow. The table below preserves historical baseline results; see [SQL consolidation](sql-consolidation.md) for current initialization and coverage semantics.
 
 ### Test harness
 

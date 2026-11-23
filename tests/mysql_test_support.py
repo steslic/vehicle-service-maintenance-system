@@ -37,6 +37,7 @@ def executable(env_name, name):
 class DisposableMySQLTestCase(unittest.TestCase):
     binary_logging = False
     legacy_routine_inspection = False
+    build_profile = 'auto'
     @classmethod
     def setUpClass(cls):
         cls.mysql = executable("MYSQL_BIN", "mysql")
@@ -152,6 +153,8 @@ class DisposableMySQLTestCase(unittest.TestCase):
 
     def build_command(self, *options, database=None, root=None):
         self.grant_database(database or self.database)
+        if self.build_profile != 'auto' and '--migrate' not in options and '--build-profile' not in options:
+            options = (*options, '--build-profile', self.build_profile)
         return [sys.executable, "-B", str((root or self.fixture) / "scripts" / "build.py"),
                 "--mysql", self.mysql, "--socket", self.socket,
                 "--database", database or self.database, *options]
