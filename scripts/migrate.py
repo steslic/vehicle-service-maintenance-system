@@ -10,7 +10,7 @@ from database import checksum, Session
 HISTORY_FILE = "09_schema_migrations.sql"
 BASELINE_FILE = "migrations/001_baseline.sql"
 SNAPSHOT_FILE = "migrations/baseline.json"
-METADATA_TABLES = {"schema_migrations", "schema_object_versions"}
+METADATA_TABLES = {"schema_migrations", "schema_object_versions", "schema_revisions"}
 
 # These immutable migrations perform their own routine GRANTs. Give their
 # developer-definer helpers authority only on the exact routines, only while
@@ -192,7 +192,7 @@ def stamp_objects(session, objects, version, sha, dirty):
         if old.get(key) == digest:
             continue
         kind, name = key.split(":", 1)
-        statements.append("REPLACE INTO schema_object_versions VALUES "
+        statements.append("REPLACE INTO schema_object_versions (object_type, object_name, migration_version, definition_checksum, source_commit_sha, source_dirty) VALUES "
                           f"({literal(kind)}, {literal(name)}, {version}, {literal(digest)}, "
                           f"{literal(sha)}, {int(dirty)});")
     for key in old.keys() - objects.keys():
@@ -221,7 +221,7 @@ def run_migrations(session, command, env, log, database, inputs, migrations, sna
         if not baseline:
             raise ValueError("Unversioned database: use --migrate --baseline to verify and register it")
         if session.run("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() "
-                       "AND TABLE_NAME = 'schema_object_versions';") != "0":
+                       "AND TABLE_NAME IN ('schema_object_versions', 'schema_revisions');") != "0":
             raise ValueError("Orphan migration metadata: baseline refused; inspect/restore the pre-run backup")
         verify_objects(schema_fingerprints(session, database, get_admin, log), snapshot, "Baseline")
         log.write("BASELINE SCHEMA VERIFICATION: PASS (no business rows changed)")
@@ -246,10 +246,15 @@ def run_migrations(session, command, env, log, database, inputs, migrations, sna
     if any(row[3] == 'covered' for row in history) or has_baseline_metadata:
         from consolidated_baseline import load_contract, validate_coverage
         from pathlib import Path
-        contract = load_contract(Path(__file__).resolve().parent.parent / 'sql')
+        contract = load_contract(Path(__file__).resolve().parent.parent / 'sql', version=6)
         validate_coverage(session, contract)
         if any(row[3] == 'covered' for row in history[6:]):
             raise ValueError('Only migrations 001–006 may be covered by this baseline')
+    has_revision = session.run("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'schema_revisions';") == '1'
+    if has_revision:
+        from consolidated_baseline import load_contract, validate_revision
+        from pathlib import Path
+        validate_revision(session, load_contract(Path(__file__).resolve().parent.parent / 'sql'))
     if history:
         if history[-1][0] > target:
             raise ValueError("Downgrades/out-of-order migration targets are not supported")

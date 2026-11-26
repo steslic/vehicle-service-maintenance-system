@@ -8,7 +8,7 @@ import mysql_test_support as support
 from error_contract import ERRORS
 
 
-class ReferenceIdentityTests(support.DisposableMySQLTestCase):
+class ReferenceIdentityTests(support.Version006TestCase):
     def setUp(self):
         super().setUp()
         self.addCleanup(self.remove_demo_accounts)

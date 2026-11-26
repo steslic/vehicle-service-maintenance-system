@@ -16,7 +16,7 @@ import test_reference_identity as identity
 CHECKPOINT = '71696139e84a4e9b69f4baa6f89a6a8d20505561'
 
 
-class ConsolidatedBuildTests(support.DisposableMySQLTestCase):
+class ConsolidatedBuildTests(support.Version006TestCase):
     remove_demo_accounts = identity.ReferenceIdentityTests.remove_demo_accounts
 
     def tagged_checkout(self):

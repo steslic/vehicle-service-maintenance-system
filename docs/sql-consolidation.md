@@ -1,5 +1,7 @@
 # Consolidated SQL installation and historical upgrades
 
+**Current revision 007:** [Procedure-only operations](procedure-operations.md) adds 29 typed mutation interfaces and removes application table/writable-view DML. Its separately pinned child contract preserves exact v006 ancestry and all existing trigger/history definitions. The v006 installation/entitlement details below remain historical context where superseded by that guide. Current fresh builds require an admin principal-collision inspection and do not silently convert existing native grants; full role/demo provisioning remains optional. Revision 007 has 41 base tables (one additional administrative table), 276 tracked objects, 45 SQL assertions, and 170 Python tests. Applications must use clean connections without caller transactions; A2 detection remains deferred.
+
 The reference is commit `71696139e84a4e9b69f4baa6f89a6a8d20505561`, tagged `pre-consolidation-2026-11`. Consolidation changes installation sources and bookkeeping. It does not introduce a new business schema version or change transaction ownership/rejection durability.
 
 ## Authoritative files and execution phases

@@ -11,7 +11,7 @@ import test_reference_identity as identity
 from error_contract import ERRORS
 
 
-class ErrorHandlingTests(support.DisposableMySQLTestCase):
+class ErrorHandlingTests(support.Version006TestCase):
     actor = identity.ReferenceIdentityTests.actor
     service = identity.ReferenceIdentityTests.service
     book = identity.ReferenceIdentityTests.book

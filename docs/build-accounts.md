@@ -1,5 +1,7 @@
 # Build and test accounts
 
+**Current revision 007:** [Procedure-only operations](procedure-operations.md) adds 29 typed mutation interfaces and removes application table/writable-view DML. Its separately pinned child contract preserves exact v006 ancestry and all existing trigger/history definitions. The v006 installation/entitlement details below remain historical context where superseded by that guide. Current fresh builds require an admin principal-collision inspection and do not silently convert existing native grants; full role/demo provisioning remains optional. Revision 007 has 41 base tables (one additional administrative table), 276 tracked objects, 45 SQL assertions, and 170 Python tests. Applications must use clean connections without caller transactions; A2 detection remains deferred.
+
 `scripts/build.py` remains the single build/migration entry point, and `sql/build.sql` remains its ordered manifest. `scripts/accounts.py` is an explicit provisioning utility; it does not build or migrate business schemas. No provisioning runs against the installed project server in automated tests.
 
 ## Fresh installations and historical upgrades
@@ -54,7 +56,7 @@ python3 scripts/accounts.py --mysql /usr/local/mysql/bin/mysql \
     --socket "$DEV_SOCKET" --database vsm_dev_example --create-developer
 
 # Fresh build: consolidated 01–08 schema/fixture/assertion work runs as vsm_developer.
-# Admin is opened only if existing target-scoped roles qualify for reader grants.
+# Revision 007 opens admin for fixture-principal collision inspection before DDL.
 python3 scripts/build.py --mysql /usr/local/mysql/bin/mysql \
     --socket "$DEV_SOCKET" --database vsm_dev_example -p --admin-password
 

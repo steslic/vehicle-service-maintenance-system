@@ -1,5 +1,7 @@
 # Standardized database errors
 
+Current revision 007 preserves the v006 contract and adds `VSM_RECORD_NOT_FOUND` (53007/45000, not_found) for typed operation targets. The two original business procedures are unchanged; 29 new procedure-only interfaces use the same classifiers and protected diagnostic propagation. See [interfaces, transaction boundaries, and limitations](procedure-operations.md).
+
 The current error-handling definitions are in the consolidated SQL files [04_procedures.sql](../sql/04_procedures.sql) and [05_triggers_roles.sql](../sql/05_triggers_roles.sql). Clients use MySQL error numbers and SQLSTATE, not human-readable message matching. All previously valid workflows and public procedure parameters remain supported. Meaningful native MySQL errors are propagated unchanged.
 
 ## Current definitions and installation paths
@@ -71,6 +73,7 @@ Fatal application errors use SQLSTATE `45000` with an explicit `MYSQL_ERRNO`. Nu
 | 53004 | `VSM_PART_NOT_FOUND` | not_found |
 | 53005 | `VSM_CUSTOMER_NOT_FOUND` | not_found |
 | 53006 | `VSM_USER_NOT_FOUND` | not_found |
+| 53007 | `VSM_RECORD_NOT_FOUND` (revision 007) | not_found |
 | 54001 | `VSM_SCHEDULE_CONFLICT` | conflict |
 | 54002 | `VSM_INVALID_TRANSITION` | conflict |
 | 54003 | `VSM_FINAL_STATE_IMMUTABLE` | conflict |
@@ -196,7 +199,7 @@ For historical upgrades, stop application writes and retain a verified pre-upgra
 
 ## Extending the contract
 
-`scripts/error_contract.py` explicitly allocates the 37 identifiers. Its legacy message map is used only by the offline generator to locate frozen version-005 SIGNAL sites. Neither database runtime classification nor caller decisions match message text. There is no mutable persistent classification catalog, so no new reference table or temporal history is needed for this protocol metadata. Migration checksums, source control, and database object versions track changes.
+`scripts/error_contract.py` preserves the original 37 identifiers for historical migration generation; `scripts/operation_contract.py` declares the additional current-revision identifier. Runtime SQL classifies all 38. Its legacy message map is used only by the offline generator to locate frozen version-005 SIGNAL sites. Neither database runtime classification nor caller decisions match message text. There is no mutable persistent classification catalog, so no new reference table or temporal history is needed for this protocol metadata. Migration checksums, source control, and database object versions track changes.
 
 For future procedures/triggers:
 
@@ -207,6 +210,8 @@ For future procedures/triggers:
 - Do not regenerate an applied migration. `scripts/generate_standardized_errors.py` reads frozen legacy/migration inputs to reproduce migration 006 for review. Fresh builds use the checked-in consolidated definitions; historical upgrades use the checked-in migration. Neither path runs the generator.
 
 ## Regression coverage
+
+The original 125 regressions are preserved on the immutable v006 fixture. The 45 current tests in `tests/test_procedure_operations.py` verify revision-007 interfaces, native denial, actor/delegation boundaries, rollback, native diagnostics, logger failure, and installation provenance. The refactor checks additionally cover partial audit-transaction rollback on a reused connection, an unavailable private helper, exact pre-transaction diagnostics, invoice-line rejection payloads and parent locks, a real deadlock through a current wrapper, and private-helper drift. Passing historical tests alone does not validate the new permission model.
 
 Run `python3 -B -m unittest discover -s tests -v`. The original 104 tests and 21 consolidation regressions use private disposable MySQL instances and generated credentials without prompts. The existing 84 build/account/reference/identity/temporal tests are preserved, with current-version application assertions changed to numeric codes. Historical acceptance SQL is preserved byte-for-byte under `sql/legacy/v001/`; migrations remain untouched. Fresh installs use current-schema assertions and the consolidated definitions. See [SQL consolidation](sql-consolidation.md).
 

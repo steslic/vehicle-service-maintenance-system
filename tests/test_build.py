@@ -19,7 +19,7 @@ LATEST_VERSION = support.LATEST_VERSION
 NEXT_VERSION = support.NEXT_VERSION
 
 
-class SafeBuildTests(support.DisposableMySQLTestCase):
+class SafeBuildTests(support.Version006TestCase):
     # Preserve all original build/SQL acceptance checks against the historical profile.
     # The default consolidated entry point is independently covered in test_consolidated_build.
     build_profile = 'legacy'

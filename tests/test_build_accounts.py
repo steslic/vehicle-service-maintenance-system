@@ -7,7 +7,7 @@ import uuid
 import mysql_test_support as support
 
 
-class BuildAccountTests(support.DisposableMySQLTestCase):
+class BuildAccountTests(support.Version006TestCase):
     legacy_routine_inspection = True
     # These assertions include migration-specific temporary authority and old SQL counts.
     build_profile = 'legacy'
@@ -214,7 +214,7 @@ prompt.assert_called_once_with('vsm_admin connection password: ')
         self.assert_no_developer_grant_authority()
 
 
-class BinaryLoggingBuildTests(support.DisposableMySQLTestCase):
+class BinaryLoggingBuildTests(support.Version006TestCase):
     binary_logging = True
 
     def test_routine_creation_requires_admin_approved_binary_logging_setting(self):

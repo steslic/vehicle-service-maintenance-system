@@ -9,7 +9,7 @@ import test_reference_identity as identity
 from generate_temporal_history import TABLES
 
 
-class TemporalHistoryTests(support.DisposableMySQLTestCase):
+class TemporalHistoryTests(support.Version006TestCase):
     actor = identity.ReferenceIdentityTests.actor
     service = identity.ReferenceIdentityTests.service
     book = identity.ReferenceIdentityTests.book
