@@ -105,6 +105,8 @@ python3 -B -m unittest discover -s tests -p test_procedure_operations.py -v
 
 The suite contains 170 tests: the original 125 v006 regressions plus 45 current-revision tests. Original assertions are unchanged and run against the immutable merged v006 fixture (`839ff8efb1c72703589a86a2920b4d9db6f60646`); no old permission, workflow, error, temporal, upgrade, or consolidation assertion was deleted. Current equivalents exercise the typed API with real restricted accounts, every procedure/role gate, direct table and writable-view denial, effective SELECT/EXECUTE grants, actor spoofing, delegation, all retained business workflows, manager overrides, concurrent histories, native lock timeout, injected history/logger failure, and rollback/context cleanup.
 
+[Database CI](../.github/workflows/database-ci.yml) runs the full suite for pull requests targeting `main`, pushes to `main`, and manual dispatches. It uses Python 3.14 and checksum-pinned MySQL Community Server 26.7.0 Linux binaries on Ubuntu 22.04. The checkout retains full history for the immutable v006 fixtures. Syntax and pinned-contract checks run before the suite; fresh builds, all 45 SQL assertions, object fingerprints, restricted-account behavior, and no-op migration checks run through the existing tests. Each test server uses a private temporary data directory and Unix socket with generated credentials; CI needs no repository database secrets or running system database service.
+
 Build tests cover pinned v006 ancestry, the explicit v007 delta, no historical SQL on fresh builds, 45 SQL assertions, damaged contracts, altered old/new definitions, tampered policy/assertion inputs before reset, honest revision/object provenance, principal collisions/schema-level DML bypass refusal, current no-op verification, and retained historical/additive migration behavior. All servers/accounts/data are disposable; root is used only for initial private bootstrap and then locked. Existing user/production databases are not used.
 
 ## Initial procedure-only validation (before the readability refactor)
@@ -136,6 +138,12 @@ The initial complete run took 250.320 seconds and reported 41 failing subchecks 
 The review run of `python3 -B -m unittest discover -s tests -v` passed **170 tests in 256.919 seconds**, with **0 failures, 0 errors, and 0 skips**: 125 preserved v006 regressions and 45 revision-007 tests. This includes real restricted-account permission checks, actor/delegation enforcement, transaction rollback, concurrent updates, native lock timeouts/deadlocks, temporal/audit preservation, best-effort rejection logging, and drift/provenance checks. No test was weakened or removed for this review.
 
 An additional fresh build on a private disposable MySQL Community Server 26.7.0 instance passed all **45 SQL assertions** and independently matched the pinned **276-object** current contract. Existing-database `--migrate` verification passed without applying a migration or changing temporal-event/audit row counts. The immutable 246-object v006 parent contract, all 187 trigger definitions, historical migrations, and legacy SQL are unchanged. Python syntax checks and `git diff --check` passed. Build/test logs and generated credentials remain outside the committed change set.
+
+## Pre-merge validation (2026-11-28)
+
+`python3 -B -m unittest discover -s tests -v` passed **170 tests in 246.738 seconds**, with **0 failures, 0 errors, and 0 skips**, on disposable MySQL Community Server 26.7.0 instances. A separate fresh build from the committed feature source passed all **45 SQL assertions**, matched all **276 pinned object fingerprints**, and verified v006 ancestry, revision provenance, and initial procedure entitlements. A subsequent `--migrate` run applied no migrations and preserved row counts in `AuditLog`, `TemporalEvent`, and all 17 history tables. Both protected context tables were empty afterward. Python syntax, contract/input checksums, and `git diff --check` passed. Triggers, historical SQL, and the v006 contract remain unchanged.
+
+The local sandbox prevented MySQL initialization; the successful database runs used the same unmodified harness outside that sandbox, with private temporary servers and generated credentials. Test logs, server files, and credentials are outside the committed change set.
 
 ## Remaining scope
 
