@@ -1,4 +1,4 @@
--- Consolidated schema equivalent to checkpoint 71696139e84a4e9b69f4baa6f89a6a8d20505561.
+-- Revision 007 builds on the immutable v006 checkpoint 71696139e84a4e9b69f4baa6f89a6a8d20505561.
 -- Only the runner creates fresh databases; never source this into an existing schema.
 CREATE DATABASE vehicle_service_maintenance CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 USE vehicle_service_maintenance;
@@ -20,15 +20,30 @@ CREATE TABLE `schema_migrations` (
   UNIQUE KEY `filename` (`filename`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+-- Fresh-installation revision history is separate from historical migration execution.
+CREATE TABLE `schema_revisions` (
+  `revision` int unsigned NOT NULL,
+  `contract_file` varchar(255) NOT NULL,
+  `contract_checksum` char(64) NOT NULL,
+  `source_commit_sha` varchar(64) NOT NULL,
+  `source_dirty` tinyint(1) NOT NULL,
+  `status` enum('applying','installed','failed') NOT NULL,
+  `started_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `installed_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`revision`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
 CREATE TABLE `schema_object_versions` (
   `object_type` varchar(20) NOT NULL,
   `object_name` varchar(100) NOT NULL,
-  `migration_version` int unsigned NOT NULL,
+  `migration_version` int unsigned DEFAULT NULL,
+  `revision_version` int unsigned DEFAULT NULL,
   `definition_checksum` char(64) NOT NULL,
   `source_commit_sha` varchar(64) NOT NULL,
   `source_dirty` tinyint(1) NOT NULL,
   PRIMARY KEY (`object_type`,`object_name`),
   KEY `migration_version` (`migration_version`),
+  CONSTRAINT `schema_object_versions_revision_fk` FOREIGN KEY (`revision_version`) REFERENCES `schema_revisions` (`revision`),
   CONSTRAINT `schema_object_versions_ibfk_1` FOREIGN KEY (`migration_version`) REFERENCES `schema_migrations` (`version`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 

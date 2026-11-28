@@ -251,3 +251,12 @@ The purpose of this project is to create a relational database that allows servi
 | SEC-01      | Show that a Service Advisor can modify appointments, non-finalized estimates, and non-finalized invoices while a Technician cannot perform the same actions. | Successful Service Advisor update and denied Technician update                                                                                                         |
 | SEC-03      | Perform a create, update, or status change on an estimate or invoice and verify that an audit entry is stored.                                               | Audit table query and the triggering operation                                                                                                                         |
 | BR-08       | Begin a multi-step repair transaction, force one step to fail, and verify that none of the incomplete changes remain in the database.                        | Rollback test with before/after results                                                                                                                                |
+
+
+## Current procedure entry points (revision 007)
+
+Business mutations now use the [typed procedure inventory and role matrix](procedure-operations.md). Native application roles retain reporting/filtered-view SELECT access but no table or writable-view INSERT, UPDATE, or DELETE. Registered actors, delegated services, lifecycle constraints, provenance, audit, and temporal history remain enforced.
+
+The executable v006 entitlement matrix is preserved: advisors maintain customer/vehicle/appointment/estimate/invoice data; technicians change assigned repair statuses and complete through the existing atomic completion procedure; managers additionally maintain technicians/parts, decide estimates, and retain audited repair-completion override. FR-11's broader actor list includes advisors as parts readers, not inventory writers. Parts usage remains part of atomic completion; no independent reversal or new business-delete permission is introduced. Only previously authorized line-item deletes are exposed.
+
+Applications must use clean connections without caller-owned transactions. Revision 007 does not implement A2 detection or a metadata-driven transition engine. The operation guide documents parameters, errors, transactions, native permissions, versioning, regression coverage, and unsupported conversion work.

@@ -38,6 +38,7 @@ class DisposableMySQLTestCase(unittest.TestCase):
     binary_logging = False
     legacy_routine_inspection = False
     build_profile = 'auto'
+    fixture_ref = None
     @classmethod
     def setUpClass(cls):
         cls.mysql = executable("MYSQL_BIN", "mysql")
@@ -62,6 +63,8 @@ class DisposableMySQLTestCase(unittest.TestCase):
         cls.server = subprocess.Popen(
             [cls.mysqld, "--no-defaults", f"--datadir={datadir}", f"--socket={cls.socket}",
              f"--pid-file={cls.server_dir / 'mysql.pid'}", "--skip-networking", "--mysqlx=OFF",
+             # Audit clocks are UTC; keep runtime-clock comparisons independent of host timezone.
+             "--default-time-zone=+00:00",
              "--innodb-buffer-pool-size=64M",
              f"--log-bin={cls.server_dir / 'binlog'}" if cls.binary_logging else "--skip-log-bin"],
             stdout=log, stderr=subprocess.STDOUT,
@@ -136,10 +139,17 @@ class DisposableMySQLTestCase(unittest.TestCase):
         self.database = "vsm_dev_" + uuid.uuid4().hex[:12]
         self.grant_database(self.database)
         self.fixture = self.server_dir / ("fixture_" + uuid.uuid4().hex[:8])
-        shutil.copytree(ROOT / "sql", self.fixture / "sql")
-        shutil.copytree(ROOT / "scripts", self.fixture / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
-        shutil.copy2(ROOT / ".gitignore", self.fixture / ".gitignore")
-        shutil.copy2(ROOT / ".gitattributes", self.fixture / ".gitattributes")
+        if self.fixture_ref is not None:
+            # Immutable original coverage, including the v006 consolidated installer.
+            self.fixture.mkdir()
+            archive = subprocess.check_output(['git', '-C', str(ROOT), 'archive', self.fixture_ref,
+                'sql', 'scripts', '.gitignore', '.gitattributes'])
+            subprocess.run(['tar', '-x', '-C', str(self.fixture)], input=archive, check=True)
+        else:
+            shutil.copytree(ROOT / "sql", self.fixture / "sql")
+            shutil.copytree(ROOT / "scripts", self.fixture / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copy2(ROOT / ".gitignore", self.fixture / ".gitignore")
+            shutil.copy2(ROOT / ".gitattributes", self.fixture / ".gitattributes")
         # Each fixture is a disposable Git clone source, never the project repository.
         subprocess.run(["git", "-C", str(self.fixture), "init", "-q"], check=True)
         subprocess.run(["git", "-C", str(self.fixture), "add", "."], check=True)
@@ -225,3 +235,8 @@ class DisposableMySQLTestCase(unittest.TestCase):
             path = self.fixture / "sql" / "build.sql"
             path.write_text(path.read_text() + f"\nSOURCE migrations/{name}\n")
 
+
+
+class Version006TestCase(DisposableMySQLTestCase):
+    """Preserve all original assertions against the merged, immutable v006 implementation."""
+    fixture_ref = '839ff8efb1c72703589a86a2920b4d9db6f60646'

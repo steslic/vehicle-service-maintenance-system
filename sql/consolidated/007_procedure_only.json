@@ -1,0 +1,1553 @@
+{
+  "added_objects": [
+    "PROCEDURE:sp_adjustpartinventory",
+    "PROCEDURE:sp_createcustomer",
+    "PROCEDURE:sp_createestimatelineitem",
+    "PROCEDURE:sp_createinvoice",
+    "PROCEDURE:sp_createinvoicelineitem",
+    "PROCEDURE:sp_createpart",
+    "PROCEDURE:sp_createrepair",
+    "PROCEDURE:sp_createrepairestimate",
+    "PROCEDURE:sp_createtechnician",
+    "PROCEDURE:sp_createvehicle",
+    "PROCEDURE:sp_deciderepairestimate",
+    "PROCEDURE:sp_deleteestimatelineitem",
+    "PROCEDURE:sp_deleteinvoicelineitem",
+    "PROCEDURE:sp_expirerepairestimate",
+    "PROCEDURE:sp_finalizeinvoice",
+    "PROCEDURE:sp_finalizerepairestimate",
+    "PROCEDURE:sp_setrepairstatus",
+    "PROCEDURE:sp_setserviceappointmentstatus",
+    "PROCEDURE:sp_submitrepairestimate",
+    "PROCEDURE:sp_tryrecordrejecteddiagnostic",
+    "PROCEDURE:sp_updatecustomer",
+    "PROCEDURE:sp_updateestimatelineitem",
+    "PROCEDURE:sp_updateinvoice",
+    "PROCEDURE:sp_updateinvoicelineitem",
+    "PROCEDURE:sp_updatepart",
+    "PROCEDURE:sp_updaterepair",
+    "PROCEDURE:sp_updaterepairestimate",
+    "PROCEDURE:sp_updateserviceappointment",
+    "PROCEDURE:sp_updatetechnician",
+    "PROCEDURE:sp_updatevehicle"
+  ],
+  "application_entitlements": [
+    [
+      "Manager",
+      "sp_AdjustPartInventory"
+    ],
+    [
+      "Manager",
+      "sp_CompleteRepair"
+    ],
+    [
+      "Manager",
+      "sp_CreateCustomer"
+    ],
+    [
+      "Manager",
+      "sp_CreateEstimateLineItem"
+    ],
+    [
+      "Manager",
+      "sp_CreateInvoice"
+    ],
+    [
+      "Manager",
+      "sp_CreateInvoiceLineItem"
+    ],
+    [
+      "Manager",
+      "sp_CreatePart"
+    ],
+    [
+      "Manager",
+      "sp_CreateRepair"
+    ],
+    [
+      "Manager",
+      "sp_CreateRepairEstimate"
+    ],
+    [
+      "Manager",
+      "sp_CreateServiceAppointment"
+    ],
+    [
+      "Manager",
+      "sp_CreateTechnician"
+    ],
+    [
+      "Manager",
+      "sp_CreateVehicle"
+    ],
+    [
+      "Manager",
+      "sp_DecideRepairEstimate"
+    ],
+    [
+      "Manager",
+      "sp_DeleteEstimateLineItem"
+    ],
+    [
+      "Manager",
+      "sp_DeleteInvoiceLineItem"
+    ],
+    [
+      "Manager",
+      "sp_ExpireRepairEstimate"
+    ],
+    [
+      "Manager",
+      "sp_FinalizeInvoice"
+    ],
+    [
+      "Manager",
+      "sp_FinalizeRepairEstimate"
+    ],
+    [
+      "Manager",
+      "sp_SetRepairStatus"
+    ],
+    [
+      "Manager",
+      "sp_SetServiceAppointmentStatus"
+    ],
+    [
+      "Manager",
+      "sp_SubmitRepairEstimate"
+    ],
+    [
+      "Manager",
+      "sp_UpdateCustomer"
+    ],
+    [
+      "Manager",
+      "sp_UpdateEstimateLineItem"
+    ],
+    [
+      "Manager",
+      "sp_UpdateInvoice"
+    ],
+    [
+      "Manager",
+      "sp_UpdateInvoiceLineItem"
+    ],
+    [
+      "Manager",
+      "sp_UpdatePart"
+    ],
+    [
+      "Manager",
+      "sp_UpdateRepair"
+    ],
+    [
+      "Manager",
+      "sp_UpdateRepairEstimate"
+    ],
+    [
+      "Manager",
+      "sp_UpdateServiceAppointment"
+    ],
+    [
+      "Manager",
+      "sp_UpdateTechnician"
+    ],
+    [
+      "Manager",
+      "sp_UpdateVehicle"
+    ],
+    [
+      "Service Advisor",
+      "sp_CreateCustomer"
+    ],
+    [
+      "Service Advisor",
+      "sp_CreateEstimateLineItem"
+    ],
+    [
+      "Service Advisor",
+      "sp_CreateInvoice"
+    ],
+    [
+      "Service Advisor",
+      "sp_CreateInvoiceLineItem"
+    ],
+    [
+      "Service Advisor",
+      "sp_CreateRepair"
+    ],
+    [
+      "Service Advisor",
+      "sp_CreateRepairEstimate"
+    ],
+    [
+      "Service Advisor",
+      "sp_CreateServiceAppointment"
+    ],
+    [
+      "Service Advisor",
+      "sp_CreateVehicle"
+    ],
+    [
+      "Service Advisor",
+      "sp_DeleteEstimateLineItem"
+    ],
+    [
+      "Service Advisor",
+      "sp_DeleteInvoiceLineItem"
+    ],
+    [
+      "Service Advisor",
+      "sp_ExpireRepairEstimate"
+    ],
+    [
+      "Service Advisor",
+      "sp_FinalizeInvoice"
+    ],
+    [
+      "Service Advisor",
+      "sp_FinalizeRepairEstimate"
+    ],
+    [
+      "Service Advisor",
+      "sp_SetServiceAppointmentStatus"
+    ],
+    [
+      "Service Advisor",
+      "sp_SubmitRepairEstimate"
+    ],
+    [
+      "Service Advisor",
+      "sp_UpdateCustomer"
+    ],
+    [
+      "Service Advisor",
+      "sp_UpdateEstimateLineItem"
+    ],
+    [
+      "Service Advisor",
+      "sp_UpdateInvoice"
+    ],
+    [
+      "Service Advisor",
+      "sp_UpdateInvoiceLineItem"
+    ],
+    [
+      "Service Advisor",
+      "sp_UpdateRepairEstimate"
+    ],
+    [
+      "Service Advisor",
+      "sp_UpdateServiceAppointment"
+    ],
+    [
+      "Service Advisor",
+      "sp_UpdateVehicle"
+    ],
+    [
+      "Technician",
+      "sp_CompleteRepair"
+    ],
+    [
+      "Technician",
+      "sp_SetRepairStatus"
+    ]
+  ],
+  "covered_migrations": [
+    {
+      "checksum": "6f75d34cb479450793455685255a4861cebd317451778900eeb3485a1f5e9428",
+      "filename": "migrations/001_baseline.sql",
+      "version": 1
+    },
+    {
+      "checksum": "2e2b1c344e7b29889f60b31f530ae605ddc9010b603fd5d343fd92bda6323b9f",
+      "filename": "migrations/002_customer_name_index.sql",
+      "version": 2
+    },
+    {
+      "checksum": "9afcffe3451e09eeeeba9c507c9f728e4f5865a6e06f71d2e4ea774dea2e36ce",
+      "filename": "migrations/003_indicator_values.sql",
+      "version": 3
+    },
+    {
+      "checksum": "4b3e7c8557dae8c9c593c95efe64d7f0fd54c9f4925c39f8e4a20a43aeec9f3f",
+      "filename": "migrations/004_session_identity_and_provenance.sql",
+      "version": 4
+    },
+    {
+      "checksum": "ce2a9e2ad54649c0468e5f1a827c38eed2ed4e53da1607a882ff0eb3829bd5b7",
+      "filename": "migrations/005_temporal_history.sql",
+      "version": 5
+    },
+    {
+      "checksum": "56a5732026c07afd64218aaa32dd75ee4aa66f6478d2f1ac76bcaef16175c02b",
+      "filename": "migrations/006_standardized_error_handling.sql",
+      "version": 6
+    }
+  ],
+  "input_sha256": {
+    "01_schema.sql": "ca7f326db782578b4b25dac1c0e3de51ff3e6e124a83ebf0301c14021d292b53",
+    "06_sample_data.sql": "1f213b77dc809d00fd199f59beeb6799a468afe5bbd400ff29d6a486fcc8108e",
+    "07_tests.sql": "dc289fd33ea958413e1ca37e9c0e5853f4677f483e30a3711918795877326524",
+    "08_demo_accounts.sql": "de13fd038b70950d0ce4a9989e8fd65b9e95fb0568c03c490d2201c80019333d"
+  },
+  "native_roles": {
+    "role_manager": {
+      "procedures": [
+        "sp_adjustpartinventory",
+        "sp_completerepair",
+        "sp_createcustomer",
+        "sp_createestimatelineitem",
+        "sp_createinvoice",
+        "sp_createinvoicelineitem",
+        "sp_createpart",
+        "sp_createrepair",
+        "sp_createrepairestimate",
+        "sp_createserviceappointment",
+        "sp_createtechnician",
+        "sp_createvehicle",
+        "sp_deciderepairestimate",
+        "sp_deleteestimatelineitem",
+        "sp_deleteinvoicelineitem",
+        "sp_expirerepairestimate",
+        "sp_finalizeinvoice",
+        "sp_finalizerepairestimate",
+        "sp_listaudittrail",
+        "sp_listindicatorvalues",
+        "sp_setrepairstatus",
+        "sp_setserviceappointmentstatus",
+        "sp_submitrepairestimate",
+        "sp_updatecustomer",
+        "sp_updateestimatelineitem",
+        "sp_updateinvoice",
+        "sp_updateinvoicelineitem",
+        "sp_updatepart",
+        "sp_updaterepair",
+        "sp_updaterepairestimate",
+        "sp_updateserviceappointment",
+        "sp_updatetechnician",
+        "sp_updatevehicle"
+      ],
+      "tables": {
+        "auditlog": "Select",
+        "customer": "Select",
+        "estimatelineitem": "Select",
+        "invoice": "Select",
+        "invoicelineitem": "Select",
+        "part": "Select",
+        "partsusage": "Select",
+        "repair": "Select",
+        "repairestimate": "Select",
+        "serviceappointment": "Select",
+        "technician": "Select",
+        "useraccount": "Select",
+        "vehicle": "Select",
+        "vw_audittrail": "Select",
+        "vw_technicianworkload": "Select",
+        "vw_vehicleservicehistory": "Select"
+      }
+    },
+    "role_service_advisor": {
+      "procedures": [
+        "sp_createcustomer",
+        "sp_createestimatelineitem",
+        "sp_createinvoice",
+        "sp_createinvoicelineitem",
+        "sp_createrepair",
+        "sp_createrepairestimate",
+        "sp_createserviceappointment",
+        "sp_createvehicle",
+        "sp_deleteestimatelineitem",
+        "sp_deleteinvoicelineitem",
+        "sp_expirerepairestimate",
+        "sp_finalizeinvoice",
+        "sp_finalizerepairestimate",
+        "sp_listindicatorvalues",
+        "sp_setserviceappointmentstatus",
+        "sp_submitrepairestimate",
+        "sp_updatecustomer",
+        "sp_updateestimatelineitem",
+        "sp_updateinvoice",
+        "sp_updateinvoicelineitem",
+        "sp_updaterepairestimate",
+        "sp_updateserviceappointment",
+        "sp_updatevehicle"
+      ],
+      "tables": {
+        "customer": "Select",
+        "estimatelineitem": "Select",
+        "invoice": "Select",
+        "invoicelineitem": "Select",
+        "part": "Select",
+        "partsusage": "Select",
+        "repair": "Select",
+        "repairestimate": "Select",
+        "serviceappointment": "Select",
+        "technician": "Select",
+        "vehicle": "Select",
+        "vw_technicianworkload": "Select",
+        "vw_vehicleservicehistory": "Select"
+      }
+    },
+    "role_technician": {
+      "procedures": [
+        "sp_completerepair",
+        "sp_listindicatorvalues",
+        "sp_setrepairstatus"
+      ],
+      "tables": {
+        "part": "Select",
+        "partsusage": "Select",
+        "vehicle": "Select",
+        "vw_myappointments": "Select",
+        "vw_myrepairs": "Select",
+        "vw_vehicleservicehistory": "Select"
+      }
+    }
+  },
+  "objects": {
+    "FUNCTION:fn_applicationerrorid": {
+      "checksum": "2e35b07758e2c4b745eeaf900a47264efdfdd5f1c1c3cc59ddd42646b6e17fb4",
+      "revision": 7,
+      "version": 6
+    },
+    "FUNCTION:fn_errorcalleraction": {
+      "checksum": "9e3a1cb45847561e36f4166ddf5949bc3cc0eb9f9e1c5b60bf20c88279344415",
+      "version": 6
+    },
+    "FUNCTION:fn_errorclass": {
+      "checksum": "f5b3a07c45b8d790c70415a09d537ac1b5768e29e63d0fafb6072349aefad43d",
+      "revision": 7,
+      "version": 6
+    },
+    "FUNCTION:fn_indicatordescription": {
+      "checksum": "6b3aa65851580cc3a640a701e0e343541cacfcac6e090400048d200ec045f6bf",
+      "version": 3
+    },
+    "PROCEDURE:sp_actorforwrite": {
+      "checksum": "d64f8b645af7f980806cc7aa2a5c72de719cca82fd714e2f0924980dc9b6e30e",
+      "version": 4
+    },
+    "PROCEDURE:sp_adjustpartinventory": {
+      "checksum": "52c04b2536526484b7526ff4e700c93f6f832bf39fda14afe21118221477b49b",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_begintemporalevent": {
+      "checksum": "dc2e18b55ec111e36b689853d8a4403b5b4183705c39c4724a5a019feeeafd5e",
+      "version": 5
+    },
+    "PROCEDURE:sp_completerepair": {
+      "checksum": "7c9a864282c3c663e04ff817583a6118475d890648de29d710c37da5db44a164",
+      "version": 6
+    },
+    "PROCEDURE:sp_createcustomer": {
+      "checksum": "25fa5711d8f9e6458cee9da708768966e24e8c1b955a576a7b93a81c53997b4b",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_createestimatelineitem": {
+      "checksum": "aec00f051c7119e02dd6868e148951bca780b1de33e272ac764974277be9d9de",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_createinvoice": {
+      "checksum": "fd23d090fa08867dd272c8714d0465936c864a145a039d8edf7654831ca4e954",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_createinvoicelineitem": {
+      "checksum": "b1309b49bd507414af3dd613efb18f47b4ec736600fdabe609ee55c7e479bd01",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_createpart": {
+      "checksum": "8dbeb10578e7b9b1f76c0192bd1be50c7e2a65cdf449a22e2e94cf7b4c209837",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_createrepair": {
+      "checksum": "8bd18f0c787c72d524ab5fe6d670cbcb9a7d3628fe82b0af280b69e8685271b3",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_createrepairestimate": {
+      "checksum": "604533eadabecb86ea00dbd1d279bef831ebdaf802cf271b31fe72498ba86f47",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_createserviceappointment": {
+      "checksum": "becd97699cce24d0d6b9fbd6966582070082eda65d1ed1ad998561b89f050261",
+      "version": 6
+    },
+    "PROCEDURE:sp_createtechnician": {
+      "checksum": "3026aa6bd044da0bef297644b969f96e60a7d6a20a6d41bcb490f21d47ca8de8",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_createvehicle": {
+      "checksum": "5376f3044c1f0bbf33edf21035c70ae38fb03753fb244298e4649cc423689044",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_deciderepairestimate": {
+      "checksum": "24891441eb460e39e72de1e726f64079f18273bb2e47232cbaa55f331ff917e2",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_deleteestimatelineitem": {
+      "checksum": "d2241a45eb59ac0675ea7d2b582d741624c3eb839da58191e31e3580aaeb8c43",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_deleteinvoicelineitem": {
+      "checksum": "f01e09fbcb3366428e3700784e54a80e2b34e2bd566a525a8a6d442b4cb61c57",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_expirerepairestimate": {
+      "checksum": "2a0ba7435ac79beab6c9a9bbd58a6a2f9fdc106a9dca4bfcdef88899c45d0170",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_finalizeinvoice": {
+      "checksum": "812eec49601b764ef68359c4c4c7fd82ba5036bc9afacf8a40d7ee1b3c7fd342",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_finalizerepairestimate": {
+      "checksum": "4db7ffa37951c9573f2c11ec10d3867b692ad8b1b81270e6bcb10c92478b8a12",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_listaudittrail": {
+      "checksum": "21e874210be47b3097b8b816b01c19da0d80120f2061b47e212dbd4378cf1f0a",
+      "version": 6
+    },
+    "PROCEDURE:sp_listindicatorvalues": {
+      "checksum": "84c1880a0472271c6b7c51cc21c62e97af3ce47f97f46980be8f3e12a8144811",
+      "version": 6
+    },
+    "PROCEDURE:sp_recordrejectedattempt": {
+      "checksum": "dee56878a5b405d364ed5ab031de9772eb4c7969c465b1c1feb34d59f2bd6651",
+      "version": 4
+    },
+    "PROCEDURE:sp_recordrejecteddiagnostic": {
+      "checksum": "91873844996ead501946730528cba956d1dcd89dd73c9e7bb31272fae9f81e2f",
+      "version": 6
+    },
+    "PROCEDURE:sp_resolveactor": {
+      "checksum": "5df1d1d4c2b42754720412285323e795a6d48a738c49fbc67f35fabebd38d7eb",
+      "version": 6
+    },
+    "PROCEDURE:sp_setrepairstatus": {
+      "checksum": "53dcaff1162b7ae6ba245f0913d199dcb6ab58fdfce91c38992e0ec4d4279871",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_setserviceappointmentstatus": {
+      "checksum": "979d5c527dd9856a37fbc0dd5a13e73bd8eb78fae203ed0505c5959d6281fec3",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_submitrepairestimate": {
+      "checksum": "6a211b3264235860923cdc7d6c81079b2fef23e8764692aed0a8cccae452bcab",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_tryrecordrejecteddiagnostic": {
+      "checksum": "f46a8136a46d34de9f99671f474d678e93db00db1f834a536836e288700e1727",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_updatecustomer": {
+      "checksum": "3a4f010525cfa104155f30254ac56fc6df7cbc225ba5e1a7ed3c38bdfc965c27",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_updateestimatelineitem": {
+      "checksum": "3a2ee4327a87489b587bb72bec59a653b92e5e4d6b02cb32be09e0adac4fe737",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_updateinvoice": {
+      "checksum": "0676138958287c94a216831551fc6b7a5a05dbb00e2e658eed6f18a0c42b9431",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_updateinvoicelineitem": {
+      "checksum": "9f8466a5389e995209befb99c0c7ecee5a42f7de912fa016cd5748e86c445cd8",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_updatepart": {
+      "checksum": "e3688dc4571a0a3b9a79400943d637cba6da5670a3abd9c717c6cd475fa1901a",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_updaterepair": {
+      "checksum": "aacbe248dfd6f1db556bba1c8919bbb0ce68f1a3d3be8ac9a4ffb9fefb9f8b6b",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_updaterepairestimate": {
+      "checksum": "1825c40b79c634dd2611b43dd13628a6d7494a8e3ba24ddcede825b50636f33f",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_updateserviceappointment": {
+      "checksum": "91a1161bf8552c309344d122fc3713b5a1ffdceb25c8095f95e2e0b6c19ad842",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_updatetechnician": {
+      "checksum": "59c6d33a51f5b1167dc4bd2f2e0ac7ddd25f99f31008de91d98a2b327eac57a9",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_updatevehicle": {
+      "checksum": "89664a9995504cbb0851c560944b0fb62d7f47b5d5ba5402153fb4385304c7e0",
+      "revision": 7,
+      "version": null
+    },
+    "PROCEDURE:sp_validateindicator": {
+      "checksum": "2918c90ce75f2010848d69c499952d728d9af3d7d1a2fbbd9ff4fbb28d809967",
+      "version": 6
+    },
+    "PROCEDURE:sp_writeauditlog": {
+      "checksum": "d30538683198cd5fe80a7d72ce54d57398a62e4e4456b58b643be65e343999ca",
+      "version": 4
+    },
+    "TABLE:auditlog": {
+      "checksum": "8da7ef651decf080ab3a17a36130cd60425b3216a400caff253829afdcba8287",
+      "version": 6
+    },
+    "TABLE:customer": {
+      "checksum": "f47672fa4f1a49093a661ba298a391c05d4b10a02a40e72589c6d4fe21fade8e",
+      "version": 2
+    },
+    "TABLE:customerhistory": {
+      "checksum": "873fb0c863a48fcb501f8d4d4aa6021bff812ef01e692e9bb7a4fc6a4fca6bf9",
+      "version": 5
+    },
+    "TABLE:databaseprincipal": {
+      "checksum": "d18642209a6f6d1be602ba2f8901f39090e37e6ae1b99080a93994c6f2c56395",
+      "version": 4
+    },
+    "TABLE:databaseprincipalhistory": {
+      "checksum": "54214f1881c302762e98b168efb47bb4b5351ac0c08c28e60087fff4f720933f",
+      "version": 5
+    },
+    "TABLE:estimatelineitem": {
+      "checksum": "4b34c6d4b7876b9615fe4ca860ecb9f01716261a1061e9503896d1944b4b52b1",
+      "version": 1
+    },
+    "TABLE:estimatelineitemhistory": {
+      "checksum": "38720f91f00588e87e41e7db4247e8df920f7994e33662b3dd348abc1f85565d",
+      "version": 5
+    },
+    "TABLE:indicatorvalue": {
+      "checksum": "09a3621fba13f3eadf8876d3872698db75e143ef5769d54aca130bed285b2826",
+      "version": 3
+    },
+    "TABLE:indicatorvaluehistory": {
+      "checksum": "157135098d2f279704376801e3a518f186c45cab123f0fa51bc5cbae324ebd59",
+      "version": 5
+    },
+    "TABLE:invoice": {
+      "checksum": "1bd10b9985427fd95c1ef275df26f70a4a68bc75e9cde73cbd36a1875a9627cd",
+      "version": 3
+    },
+    "TABLE:invoicehistory": {
+      "checksum": "43668a3244e96a9682e7550446f35bc126a233ea122901477673adb156e7daba",
+      "version": 5
+    },
+    "TABLE:invoicelineitem": {
+      "checksum": "9ba8279fc274a1f804cc687cc890418206ddc06f9e8e29efe9c76386b3edcbc4",
+      "version": 1
+    },
+    "TABLE:invoicelineitemhistory": {
+      "checksum": "9dfffa6c660845dcc1dd938e5036e998d3ffeec7adfad5c139f6057d309991b7",
+      "version": 5
+    },
+    "TABLE:operationcontext": {
+      "checksum": "f3dd40f2c4ef305137783e3b2086a7981b8445ad088073ab0755e1eab8569da7",
+      "version": 4
+    },
+    "TABLE:part": {
+      "checksum": "b5a1a86ea3b754803e3d071f7143a71b424948a4d1a2cfea082845f2f3ba1494",
+      "version": 3
+    },
+    "TABLE:parthistory": {
+      "checksum": "ff187dee358332899788a72a554850f760dd87bb43730cc55f08a557ffd0f4f6",
+      "version": 5
+    },
+    "TABLE:partsusage": {
+      "checksum": "0cd70ebbcbd365e0ee1f44c9f2a2bb4ad011d8753f361f01bec7cae29ac4ccd8",
+      "version": 1
+    },
+    "TABLE:partsusagehistory": {
+      "checksum": "517a44f2dc6af366534cac700e37fd735739242dce98db2edd4b6e7adcc5cb51",
+      "version": 5
+    },
+    "TABLE:principaldelegation": {
+      "checksum": "02492e36d55928f939c72026d48b24227e7f0f5b90d7f155205051fe0d4ddce8",
+      "version": 4
+    },
+    "TABLE:principaldelegationhistory": {
+      "checksum": "bcf051b7859c1beba1c048f68901720703b20883f9cd32a36f8f7dfc589990ce",
+      "version": 5
+    },
+    "TABLE:repair": {
+      "checksum": "b46a56e5f2edae82ac7fe18bbbd4717419c0ff282295d849256d2743ef82544f",
+      "version": 3
+    },
+    "TABLE:repairestimate": {
+      "checksum": "45f7a6d6c8b57b2df30add9f9191f25eb5b8eaa1db4101730e8d8adca1a1ebdd",
+      "version": 3
+    },
+    "TABLE:repairestimatehistory": {
+      "checksum": "9cc13453360faa77158f9c1614bfb7f277952cde18a829f5b151775f54fc33dc",
+      "version": 5
+    },
+    "TABLE:repairhistory": {
+      "checksum": "d36f9debff63763a0a0d73a7eb7a2e5347f9331eaaf698c16df35050ec8eed89",
+      "version": 5
+    },
+    "TABLE:roleprocedurepermission": {
+      "checksum": "428a137c25c291f13fca8b37b9ec211963b5a1aa8465c1ad72dfa8a731dfb1ea",
+      "version": 4
+    },
+    "TABLE:roleprocedurepermissionhistory": {
+      "checksum": "d3ca5d399b461af5e51339480a997f913cdfb85cf505243d40098305b82f88c2",
+      "version": 5
+    },
+    "TABLE:serviceappointment": {
+      "checksum": "5f490fb093d804d1bcc6b7aaf922da1d72e66931fcb97fedcf66879aa62fb182",
+      "version": 3
+    },
+    "TABLE:serviceappointmenthistory": {
+      "checksum": "4e3abd76e9faa4d94c729f9e8e4ad37823f791952c37c299320970b82ffb1251",
+      "version": 5
+    },
+    "TABLE:technician": {
+      "checksum": "31d44b4cdeed668286bb40b5b8c4ee7805078b6fe45a0650e637732b0aefcd3a",
+      "version": 3
+    },
+    "TABLE:technicianhistory": {
+      "checksum": "bb106c9f47a2562e26536bd41607dda3a9073c2238cdd2a87ffcbc08e180bd7e",
+      "version": 5
+    },
+    "TABLE:temporalevent": {
+      "checksum": "ef48f46007b9cc48330f52df85f3f9dace0eda0d33fb11584dd81a0e2a7d90c3",
+      "version": 5
+    },
+    "TABLE:temporalwritecontext": {
+      "checksum": "c46d2eaac1a589e947746ccba7d09a57b9edd54956b563e0a7854c6ab49e162b",
+      "version": 5
+    },
+    "TABLE:useraccount": {
+      "checksum": "e3241ef5587ae4cb9e46e6ce017f1c86ce97f464216e365d4464240b1b7c3aca",
+      "version": 4
+    },
+    "TABLE:useraccounthistory": {
+      "checksum": "fa27a0a91c60df8c4f14e41caa65ea009c8d268a229c1de5c136cb17d096ebbd",
+      "version": 5
+    },
+    "TABLE:userrolepolicy": {
+      "checksum": "2d9c58b5ce47da02906609b63b8f067d6d516022aa47bd5f92a85f8adf789534",
+      "version": 4
+    },
+    "TABLE:userrolepolicyhistory": {
+      "checksum": "366c506be652f422db14c1ccf4083177f8c854406cde18ba0eef7e00135e93ca",
+      "version": 5
+    },
+    "TABLE:vehicle": {
+      "checksum": "8f9cbb7d7bcaf8816d288691d3d699820beaf12d4cc620851cb48cec0d06f72b",
+      "version": 1
+    },
+    "TABLE:vehiclehistory": {
+      "checksum": "31a17f12f5e5fe1befa2c2e3f91a608d64e4ea7d4b9f6f384bbab10e84a1efcd",
+      "version": 5
+    },
+    "TRIGGER:trg_auditlog_indicator_bi": {
+      "checksum": "592182f2a809eb76f09f2f1a7bb933114e115457661ade7be68133f8ae02b495",
+      "version": 3
+    },
+    "TRIGGER:trg_auditlog_indicator_bu": {
+      "checksum": "05972023351dd078eed1a3c40a738ac335b7fe1548432fb99e81902ad110ef7f",
+      "version": 3
+    },
+    "TRIGGER:trg_auditlog_protect_bd": {
+      "checksum": "d707e3c7c092b728712175258c172bbc1aae03b5bd9df42db29deae60971fa1f",
+      "version": 6
+    },
+    "TRIGGER:trg_auditlog_protect_bu": {
+      "checksum": "4ccb0fb735dfd343e5063bcd9637750755be0d0409184d3cf7aba82eed1baeb0",
+      "version": 6
+    },
+    "TRIGGER:trg_customer_history_ad": {
+      "checksum": "6005a72fe06b3a13f3c04c4f5408adc3b23d224283259083ae22e881668e7491",
+      "version": 6
+    },
+    "TRIGGER:trg_customer_history_ai": {
+      "checksum": "5ea63ca0935a3957c4f9d495ecc2b4890d3668e4493ba06ce02955d727331022",
+      "version": 5
+    },
+    "TRIGGER:trg_customer_history_au": {
+      "checksum": "1fbd8d9396a27f235b7bf74e93377d364bedeee77622cafcd4dc4cd2a9efe912",
+      "version": 6
+    },
+    "TRIGGER:trg_customer_historyguard_bd": {
+      "checksum": "a2aa8e04540b7a58aca0fa305228448e2bef15085ef8120ce5ee86b9c8d8b68f",
+      "version": 6
+    },
+    "TRIGGER:trg_customer_historyguard_bi": {
+      "checksum": "8e6b5c36eb11ffc9c6701fc7f677f68ffff6cd89417cd64b14c514ff18847dcb",
+      "version": 6
+    },
+    "TRIGGER:trg_customer_historyguard_bu": {
+      "checksum": "6e5ff8fe02e69ea5d90361a910debdeb751e37ff82f9c0441b6b94d3ebbfce53",
+      "version": 6
+    },
+    "TRIGGER:trg_customer_provenance_bi": {
+      "checksum": "5a6b2818234cf25cb3e0a1d45f1ab7b8be202738f47a9af306a3952c305f58fe",
+      "version": 6
+    },
+    "TRIGGER:trg_customer_provenance_bu": {
+      "checksum": "8d398f7a98c90f5d88e996d99de7635b41e27f6df8cc61dab83cdbebe979a7b5",
+      "version": 6
+    },
+    "TRIGGER:trg_databaseprincipal_history_ad": {
+      "checksum": "aa1b9b5379603d4f3c315ca14dfddc8f72cb3d5d679dfa9794908b791a5de42d",
+      "version": 6
+    },
+    "TRIGGER:trg_databaseprincipal_history_ai": {
+      "checksum": "989add61ad4fbd8598ab861ab376514845037b46fc157727dcc2b12f9b882e4b",
+      "version": 5
+    },
+    "TRIGGER:trg_databaseprincipal_history_au": {
+      "checksum": "33e389c0a0dbf42e1adf715c19c1dfdf369d7018e6c576112381e1eda47b0c4c",
+      "version": 6
+    },
+    "TRIGGER:trg_databaseprincipal_historyguard_bd": {
+      "checksum": "752cf31e7e15b2df351cb3331d22db4a0a5fd24738876b8a8f09b0f7c8afb896",
+      "version": 6
+    },
+    "TRIGGER:trg_databaseprincipal_historyguard_bi": {
+      "checksum": "b472ce17b4bd841c93c3f9ab6b1a8fc3aff67c36bdda564e3273afef7955f2d4",
+      "version": 6
+    },
+    "TRIGGER:trg_databaseprincipal_historyguard_bu": {
+      "checksum": "d8489f49f1e6580581538d3c16a7822f551b41a3267912efbd332bc450ebaeaa",
+      "version": 6
+    },
+    "TRIGGER:trg_estimatelineitem_audit_ad": {
+      "checksum": "e66fae500ebf4d95fc2ae9f02e2c6c6a7cd4501ceaae29000973735947798618",
+      "version": 1
+    },
+    "TRIGGER:trg_estimatelineitem_audit_ai": {
+      "checksum": "f6a0ac2b4b4b304e1bc9b252614f14a1ffac0c48f7185ae2471520c37333c558",
+      "version": 1
+    },
+    "TRIGGER:trg_estimatelineitem_audit_au": {
+      "checksum": "8db6f8a4d021fc9b5593840ade4b5f8aefe6d850fd8cc05bbde5600fabe1207e",
+      "version": 1
+    },
+    "TRIGGER:trg_estimatelineitem_history_ad": {
+      "checksum": "2379c4510c9693c3532191e7249135ceeb381a8b1fdcc685a7253d8d9b16ffb8",
+      "version": 6
+    },
+    "TRIGGER:trg_estimatelineitem_history_ai": {
+      "checksum": "acaaf74be058f9364eaa98856b364102a790a59ce66645759630c99b88d2b7d0",
+      "version": 5
+    },
+    "TRIGGER:trg_estimatelineitem_history_au": {
+      "checksum": "3eae7c57ccee3a633ef0c4e11978b7c9b16870f20da5a6ca82fbb538c260dd6a",
+      "version": 6
+    },
+    "TRIGGER:trg_estimatelineitem_historyguard_bd": {
+      "checksum": "33163e85d99f7f9f114e4ae27af6b3d555b758ab157105769d5ec69db935238b",
+      "version": 6
+    },
+    "TRIGGER:trg_estimatelineitem_historyguard_bi": {
+      "checksum": "4036319b30f03444eacfb01e806a0a397f624dd31615b9d9bca43b98e8822074",
+      "version": 6
+    },
+    "TRIGGER:trg_estimatelineitem_historyguard_bu": {
+      "checksum": "e52de3e44368c84383c101d13705b1fa2594362808f4fa0a018fda2bfef8435b",
+      "version": 6
+    },
+    "TRIGGER:trg_estimatelineitem_provenance_bi": {
+      "checksum": "cc7a0a95ab0f948f8df607d1b071cc6b6b25a75d0fa41d6038804c017b97b599",
+      "version": 6
+    },
+    "TRIGGER:trg_estimatelineitem_provenance_bu": {
+      "checksum": "56b5db80c4d542432faf0a3799d7ff45fbbbad1d55ef1f922629e54dacd9b849",
+      "version": 6
+    },
+    "TRIGGER:trg_estimatelineitem_validate_bd": {
+      "checksum": "1f91377cb502124d1877755b4722cc5491582d56d53efb728d3584707c3e1832",
+      "version": 6
+    },
+    "TRIGGER:trg_estimatelineitem_validate_bi": {
+      "checksum": "5ee423dbb98a228a90101f56dcee0237a2c30139cd71e160bfc89f2fa48ae5d0",
+      "version": 6
+    },
+    "TRIGGER:trg_estimatelineitem_validate_bu": {
+      "checksum": "02c4f1ade5f3f7a86face58983b454342e91ada54d1b2e1ecda09a0d59c55bdf",
+      "version": 6
+    },
+    "TRIGGER:trg_indicatorvalue_history_ad": {
+      "checksum": "f4489e753570f640c80a5babb2f60b8f985babf943f06ddf75487d481b8996eb",
+      "version": 6
+    },
+    "TRIGGER:trg_indicatorvalue_history_ai": {
+      "checksum": "8668a71218791f751e5cc376e8997afd6c05814f013a256a2015ff50aaa784b7",
+      "version": 5
+    },
+    "TRIGGER:trg_indicatorvalue_history_au": {
+      "checksum": "444ac0e95c91013ebb9b5f6e107437c39a1fd0f22bebca90c14bc406ba65c278",
+      "version": 6
+    },
+    "TRIGGER:trg_indicatorvalue_historyguard_bd": {
+      "checksum": "8341f66698a472a6b49eee1edcba620bdb836e7e8047d618cc3d788b42d84ae2",
+      "version": 6
+    },
+    "TRIGGER:trg_indicatorvalue_historyguard_bi": {
+      "checksum": "bb45ac51f9d5acb05aad2817dde7427e2c4ba089b412aa7c6067e84b11414b5e",
+      "version": 6
+    },
+    "TRIGGER:trg_indicatorvalue_historyguard_bu": {
+      "checksum": "8ba931a477a1c3e0771a540f6bc5b4b22e8f65a2317368799f275627063b349e",
+      "version": 6
+    },
+    "TRIGGER:trg_invoice_audit_ad": {
+      "checksum": "5c90934c7423fd8e05bcde6c883fc0b7c27acea8c0f3f055d68bc4b6b9888ffb",
+      "version": 1
+    },
+    "TRIGGER:trg_invoice_audit_ai": {
+      "checksum": "651e8a46f919954eec8b38cd25796e25ed637be389599804ef45993f063374ee",
+      "version": 1
+    },
+    "TRIGGER:trg_invoice_audit_au": {
+      "checksum": "36d18736be52adf2622534c7e96914d68aa4ddf656d16bafa1e7f7737eefd424",
+      "version": 1
+    },
+    "TRIGGER:trg_invoice_history_ad": {
+      "checksum": "66ca73bca5f1426728d471de0d5306385a824a1f48fc075de1a497e85ae23dc4",
+      "version": 6
+    },
+    "TRIGGER:trg_invoice_history_ai": {
+      "checksum": "a81576a89bef86fbbcad12bc889fd92908afab7d1fdba30c1bca749f411ae4f2",
+      "version": 5
+    },
+    "TRIGGER:trg_invoice_history_au": {
+      "checksum": "21c8248e937fb5805d3ddcaa8e986c07e9fa021097d4d86d33d87376a020e7aa",
+      "version": 6
+    },
+    "TRIGGER:trg_invoice_historyguard_bd": {
+      "checksum": "ae2e922c647f870e955cc5bae2fce3c4c84adde0fad0a34e6e1b43783ee1b96f",
+      "version": 6
+    },
+    "TRIGGER:trg_invoice_historyguard_bi": {
+      "checksum": "30c95b44e77e15c2f92c043b314e47327f0825d6de26e10b2585513706a99135",
+      "version": 6
+    },
+    "TRIGGER:trg_invoice_historyguard_bu": {
+      "checksum": "0739da30f5ef3a99ac953632ebb41800979d81461b560fc9797c38785866d790",
+      "version": 6
+    },
+    "TRIGGER:trg_invoice_indicator_bi": {
+      "checksum": "5d7ede06c528ea3c8749beb82262c2cb0d8aee168d826c35ea9445cbec3caa25",
+      "version": 4
+    },
+    "TRIGGER:trg_invoice_indicator_bu": {
+      "checksum": "638c88132601ef5f32b55552e497dba60d5368ea57d3c45b88a797be230b84c5",
+      "version": 4
+    },
+    "TRIGGER:trg_invoice_provenance_bi": {
+      "checksum": "c84f9669bccf864b4a4d5f68344980e648b21bc2705fe207498b62e564aee0bf",
+      "version": 6
+    },
+    "TRIGGER:trg_invoice_provenance_bu": {
+      "checksum": "042698f6cf1afeb9d2c3bca953056dbf66524d83710b0b1935407e44b959677f",
+      "version": 6
+    },
+    "TRIGGER:trg_invoice_transitionguard_bu": {
+      "checksum": "8848beb5d26b6130f516a8c102b1c13d73bf755e25d1cc76d7cd604ffe1f0008",
+      "version": 6
+    },
+    "TRIGGER:trg_invoice_validate_bd": {
+      "checksum": "e5d83865487fa33cb40b6b9983b756e606860f123ce7933dbe26cca59192b360",
+      "version": 6
+    },
+    "TRIGGER:trg_invoice_validate_bi": {
+      "checksum": "51f9f88202395dae5a1fb54dd72b643114830be306b809f1a0229ce15bc8563f",
+      "version": 6
+    },
+    "TRIGGER:trg_invoice_validate_bu": {
+      "checksum": "8de72f8c2ad3537ac4039a1d9a01ae7658f7bf20d2fb9eba72b6488475fd1e99",
+      "version": 6
+    },
+    "TRIGGER:trg_invoicelineitem_audit_ad": {
+      "checksum": "a02c152038fd23bb5ec726eff69307b7abc8d711f98ac2524d0c70ea861d1ccc",
+      "version": 1
+    },
+    "TRIGGER:trg_invoicelineitem_audit_ai": {
+      "checksum": "01db64e7e3796845f3ddbef40176832ecf537a4bc05852adfa208dca1744d5a0",
+      "version": 1
+    },
+    "TRIGGER:trg_invoicelineitem_audit_au": {
+      "checksum": "5fe21adfb1b4c6bb1e2177bee43ff0c65ae3a366a298d6057062ac190bc2c679",
+      "version": 1
+    },
+    "TRIGGER:trg_invoicelineitem_history_ad": {
+      "checksum": "eda2e5550261c9b8358813171b655a101ef0216ff52d1b7fe77ba5d01fc5dd73",
+      "version": 6
+    },
+    "TRIGGER:trg_invoicelineitem_history_ai": {
+      "checksum": "ff76a8d99fb6739a222fe460cfac9f7329bf742b4d60ba48c42650a8a720de7d",
+      "version": 5
+    },
+    "TRIGGER:trg_invoicelineitem_history_au": {
+      "checksum": "ab0c3b5f76bced5187cdf651e864269f4288877c205f0b0fe73e9017d5658be4",
+      "version": 6
+    },
+    "TRIGGER:trg_invoicelineitem_historyguard_bd": {
+      "checksum": "7c2400cbb2521b6b1b135005538152a19f9d4f6f2f6a3f4803693882f4b8016a",
+      "version": 6
+    },
+    "TRIGGER:trg_invoicelineitem_historyguard_bi": {
+      "checksum": "06475b3cd34312f68ca750d9659ceb09dd399bd8172690d36636ac66cac1a2c2",
+      "version": 6
+    },
+    "TRIGGER:trg_invoicelineitem_historyguard_bu": {
+      "checksum": "2e5da48a580b5d5ff00a76336c8695aa56a4bd8528768df8ae52b6d5fc737539",
+      "version": 6
+    },
+    "TRIGGER:trg_invoicelineitem_provenance_bi": {
+      "checksum": "0ec089a3798a7f94bb780d418544c8f20c44f2d7e7fdd35c6c075d2327cf3cec",
+      "version": 6
+    },
+    "TRIGGER:trg_invoicelineitem_provenance_bu": {
+      "checksum": "f1b0074c68b4b5421b7bea9170b7213ea8485cf8e94d2a7c16b7e7899af2b796",
+      "version": 6
+    },
+    "TRIGGER:trg_invoicelineitem_validate_bd": {
+      "checksum": "57efddae26eb7929353b545bec70f8dcc5d7a57261d7fd92eefc5b2bc3d890fd",
+      "version": 6
+    },
+    "TRIGGER:trg_invoicelineitem_validate_bi": {
+      "checksum": "ef677ef563f5636c85082cf54bf7c765ffab92484c5e40f97555822a20f17741",
+      "version": 6
+    },
+    "TRIGGER:trg_invoicelineitem_validate_bu": {
+      "checksum": "d5157ba76349c634d7fac90a7233c8506e382568f0ba14466a5c73d064f5672e",
+      "version": 6
+    },
+    "TRIGGER:trg_part_history_ad": {
+      "checksum": "e4f8a31d4a52a31b7903f6ea7bfa177606204176a19d780a211e7af1db2da75d",
+      "version": 6
+    },
+    "TRIGGER:trg_part_history_ai": {
+      "checksum": "4e37c00fc06927073134963b5bfe7f1a43a5815d2d006b0cf284fd8de1cd1558",
+      "version": 5
+    },
+    "TRIGGER:trg_part_history_au": {
+      "checksum": "8abbbd0bad823671af8552acccadeefe28c83a17f24cf715d03a4bc4778d59ec",
+      "version": 6
+    },
+    "TRIGGER:trg_part_historyguard_bd": {
+      "checksum": "153dbea1332f69c77d270be70bd8b096f2a2dbf9c9039e2369d4f0d187e453b6",
+      "version": 6
+    },
+    "TRIGGER:trg_part_historyguard_bi": {
+      "checksum": "64e88240863fc97f33759465643585c9a74268e7bdd35542ec8e6b9dc25ff759",
+      "version": 6
+    },
+    "TRIGGER:trg_part_historyguard_bu": {
+      "checksum": "a42763a0893b066c598529980157ac236d5d20697afa9b284aa4ecffae9c84fd",
+      "version": 6
+    },
+    "TRIGGER:trg_part_indicator_bi": {
+      "checksum": "f2c4fe356a9503428c443483f91aa3513fa2b03b369aef44881617b1fce26d9a",
+      "version": 4
+    },
+    "TRIGGER:trg_part_indicator_bu": {
+      "checksum": "de485ff5955782f377a095f69154afed6ab17c2b7db7a559e1acd1ca35fc7e9f",
+      "version": 4
+    },
+    "TRIGGER:trg_part_provenance_bi": {
+      "checksum": "9b6d63a5f1dcd00e6b3de27670cea09ea539df30fb27c6d727604bf33cafd020",
+      "version": 6
+    },
+    "TRIGGER:trg_part_provenance_bu": {
+      "checksum": "5f19ea5f613744137b548e2773897a25525622a8feab7eb930a28a12ea7fc0f5",
+      "version": 6
+    },
+    "TRIGGER:trg_partinventory_audit_au": {
+      "checksum": "9c0e3ea690587aaf04bef8c8bd3ee2d5c2479dc320c4be9055fa5dba22f82ecc",
+      "version": 6
+    },
+    "TRIGGER:trg_partsusage_audit_ad": {
+      "checksum": "280fc8d466aba4fc33312d5f7a25881b486f55b80c63834bfba5459c9ff401b9",
+      "version": 1
+    },
+    "TRIGGER:trg_partsusage_audit_ai": {
+      "checksum": "fc308e6fea28aee10d002385b23fc1e8eb2b6e21ebddc5b6dba10a5c546f48ec",
+      "version": 1
+    },
+    "TRIGGER:trg_partsusage_audit_au": {
+      "checksum": "2f38c99735d57a41e8a1605584ac68ee996c2cb476485a06aaac65d5bc17b6c8",
+      "version": 1
+    },
+    "TRIGGER:trg_partsusage_history_ad": {
+      "checksum": "e4e7a3717d6e8138c9aa874f0312cb69677dee5bab5737b4a7a7115ccdf49a51",
+      "version": 6
+    },
+    "TRIGGER:trg_partsusage_history_ai": {
+      "checksum": "e7062fa00217daf1224a11d75e094653032db1a1a3b8d0167fe14ac779d5fc90",
+      "version": 5
+    },
+    "TRIGGER:trg_partsusage_history_au": {
+      "checksum": "60688b6ef7687063523f507e933bb7f42d5aaaabdd1e97a2394526c1cbdbd480",
+      "version": 6
+    },
+    "TRIGGER:trg_partsusage_historyguard_bd": {
+      "checksum": "a0a54cdbfd697480982f97da6e3c1c02ed1f90cfecb04e1c0a5e922282254913",
+      "version": 6
+    },
+    "TRIGGER:trg_partsusage_historyguard_bi": {
+      "checksum": "19ca92ee19a22f9713ce109a08f4f81d859be262775e39b4c2e61e3ecd57bef1",
+      "version": 6
+    },
+    "TRIGGER:trg_partsusage_historyguard_bu": {
+      "checksum": "5b337ec376788be7d04c4f1b4dfae38e155d8b7bf70c6d70bc9ac7224c66d7b8",
+      "version": 6
+    },
+    "TRIGGER:trg_partsusage_provenance_bi": {
+      "checksum": "6b4e28763c9854f1a28650e94f0b6ca9406ef63ea306b6ee04bb22b3b1ebbac0",
+      "version": 6
+    },
+    "TRIGGER:trg_partsusage_provenance_bu": {
+      "checksum": "c4c1727ee9c33a94f17ea57cd99efc636ef1c1f9f3e0b90a033e3daca327c2dd",
+      "version": 6
+    },
+    "TRIGGER:trg_principaldelegation_history_ad": {
+      "checksum": "e579a4ad228ee580bc7b47def6d41752222acc87aa0ed36b88487e675b3c3d5f",
+      "version": 6
+    },
+    "TRIGGER:trg_principaldelegation_history_ai": {
+      "checksum": "a04b04bbfbf2ac410dc4034f8820581f42b63bdbf73bde0804875d120c229e40",
+      "version": 5
+    },
+    "TRIGGER:trg_principaldelegation_history_au": {
+      "checksum": "b2e75dbd520a075789e7cbab0703369ecf51532bc383c00c96e7977ce602657f",
+      "version": 6
+    },
+    "TRIGGER:trg_principaldelegation_historyguard_bd": {
+      "checksum": "316f8f5a4f92f037e592216270b049f523501e71b16d3e90b71246a54845ae15",
+      "version": 6
+    },
+    "TRIGGER:trg_principaldelegation_historyguard_bi": {
+      "checksum": "7b49c526b1a31f8c44f14f5994a465869663c557c7ff49b7859db953cd71f881",
+      "version": 6
+    },
+    "TRIGGER:trg_principaldelegation_historyguard_bu": {
+      "checksum": "c96f18698355346150219ba731b0a8a38ada8fcf7b00a94201478344f0db8bbc",
+      "version": 6
+    },
+    "TRIGGER:trg_repair_audit_ad": {
+      "checksum": "e4206e75a11bd2e98534596c15b5916271a45d31b4fe7b8092b4fcae3ea4fb1e",
+      "version": 1
+    },
+    "TRIGGER:trg_repair_audit_ai": {
+      "checksum": "11d3b71e5fbd233d8ec61c639e0dc7379c6cc047dc3791c63ab4fcf3cc543f7f",
+      "version": 1
+    },
+    "TRIGGER:trg_repair_audit_au": {
+      "checksum": "05adbaaf5b0830d9365f5534b2571a5e4d4a9c3cef007c47d8852b0042b18d4c",
+      "version": 1
+    },
+    "TRIGGER:trg_repair_history_ad": {
+      "checksum": "8cc3591d63c974541b04416cd3b514ca6e419173102c52ba3d4bea0c97a3c51a",
+      "version": 6
+    },
+    "TRIGGER:trg_repair_history_ai": {
+      "checksum": "fee4a749356d9e54963795c2489092b8122ca681c9f35df5b4576ed57f4d6407",
+      "version": 5
+    },
+    "TRIGGER:trg_repair_history_au": {
+      "checksum": "5e0ee6c341b5f44bfa56edfd97b654899b9dba60c90a113f0b51309719888eac",
+      "version": 6
+    },
+    "TRIGGER:trg_repair_historyguard_bd": {
+      "checksum": "dcc4ba032fbb9a6c70a6641edf352c2a5c34071abd0dac1347b5cd2f7f0288a5",
+      "version": 6
+    },
+    "TRIGGER:trg_repair_historyguard_bi": {
+      "checksum": "280e870e8592a0fb5ecd3226a13dd43e3c681d342a0909b35b2b337fa5b9254c",
+      "version": 6
+    },
+    "TRIGGER:trg_repair_historyguard_bu": {
+      "checksum": "b592b9cdd568d5d9e5e6b645f6fd958b8f9076c6c78f590215c7a60c877dd9fb",
+      "version": 6
+    },
+    "TRIGGER:trg_repair_indicator_bi": {
+      "checksum": "c59929ae8d2d35d42ac33b361cbadf16e4c7f7643401bc3c874cd10d2412b6a3",
+      "version": 4
+    },
+    "TRIGGER:trg_repair_indicator_bu": {
+      "checksum": "2a3148c023766b5a8c2fe1ff90d32167cf450168d3f077e7f0f20061e956853e",
+      "version": 4
+    },
+    "TRIGGER:trg_repair_provenance_bi": {
+      "checksum": "25d3c05d7d4aaa86dbf4af3f5560c665c741e2649dc8dc5ba56f16ffffd046e1",
+      "version": 6
+    },
+    "TRIGGER:trg_repair_provenance_bu": {
+      "checksum": "0d6a178677f79308f8aa6e6a2926fba5659f1d84ab895d73a4bf34f5cf3bc886",
+      "version": 6
+    },
+    "TRIGGER:trg_repair_status_validate_bi": {
+      "checksum": "6e39e49fcc1e4fe6db1906ee4c8e57bbf58415c148d9b452294cc5bd77bd6af5",
+      "version": 6
+    },
+    "TRIGGER:trg_repair_status_validate_bu": {
+      "checksum": "5aaec8f212f30ff82b5ece70336052b78fea3eaace166fc4cce3e96456bcf645",
+      "version": 6
+    },
+    "TRIGGER:trg_repairestimate_audit_ad": {
+      "checksum": "9d145967e4e55046805cb92dfbaed68e731e2fed4b3840a67214be84c139cb73",
+      "version": 1
+    },
+    "TRIGGER:trg_repairestimate_audit_ai": {
+      "checksum": "8c4a0e701ba78f4e65d11eb82b3ef67721b8d41b7e88c661061837ffa0136546",
+      "version": 1
+    },
+    "TRIGGER:trg_repairestimate_audit_au": {
+      "checksum": "0b11bd9ccc7d0fef1966b96e55b6913581ce5df082d62755e2fb4730a9e470d7",
+      "version": 1
+    },
+    "TRIGGER:trg_repairestimate_history_ad": {
+      "checksum": "32c9ce876d380a002d533b73a452093e555c047ff6a9c07d9f6eeca3b3646d3d",
+      "version": 6
+    },
+    "TRIGGER:trg_repairestimate_history_ai": {
+      "checksum": "988aa160d07d98167f1e0eadb246193c545fbdfc344f69067ee20094a840a84b",
+      "version": 5
+    },
+    "TRIGGER:trg_repairestimate_history_au": {
+      "checksum": "2d64f621207f98a379f73dff051a8600a3e00328345e28f948fcc5efcfdc8a35",
+      "version": 6
+    },
+    "TRIGGER:trg_repairestimate_historyguard_bd": {
+      "checksum": "c3120b0e9886a5ef40f596f51c60b9530be97ca9aabb3ffd0fab9a80144ab47c",
+      "version": 6
+    },
+    "TRIGGER:trg_repairestimate_historyguard_bi": {
+      "checksum": "0f5ff6386ed8cb57ba05ec93250c1cdc5e4c06124f28f360f96da75b9d0d1830",
+      "version": 6
+    },
+    "TRIGGER:trg_repairestimate_historyguard_bu": {
+      "checksum": "09439e2235f550fab3d492c79e8f289013ff3c4f750638ed7ba11e2084745df6",
+      "version": 6
+    },
+    "TRIGGER:trg_repairestimate_indicator_bi": {
+      "checksum": "ac32bfc5e965a59084e3f20158c13cabad14f649d59b18845c0c1df1f5559868",
+      "version": 4
+    },
+    "TRIGGER:trg_repairestimate_indicator_bu": {
+      "checksum": "239e30c42236e1d0bde97eb92aa44e22e33ec7aafe2d77c3b6904124a2b15d03",
+      "version": 4
+    },
+    "TRIGGER:trg_repairestimate_provenance_bi": {
+      "checksum": "9700b0bd134d6ea9a7d4ada84485820645b59eb994d0038d3e302e0d9b29f2f6",
+      "version": 6
+    },
+    "TRIGGER:trg_repairestimate_provenance_bu": {
+      "checksum": "d6bdfeaf8525e9d56f702f9d751a063ce17b242aee84a7c19b8f428ef59b3e8c",
+      "version": 6
+    },
+    "TRIGGER:trg_repairestimate_validate_bd": {
+      "checksum": "c8074464f8ad9de97a7d58c0000cc2f627c848e3018fe7306b26d4fe9f67b54f",
+      "version": 6
+    },
+    "TRIGGER:trg_repairestimate_validate_bi": {
+      "checksum": "6406b4960d699c5a9b7472f97e6eb7cfe8e9afe8acdbcc44e35c85227002ee3c",
+      "version": 6
+    },
+    "TRIGGER:trg_repairestimate_validate_bu": {
+      "checksum": "66bdec02925869c73be5ee1348e275c2758a91571bf842fb634a8399dbe8ac05",
+      "version": 6
+    },
+    "TRIGGER:trg_roleprocedurepermission_history_ad": {
+      "checksum": "ef0d4c38b4fcbaa000affa4db0d57294662c67210669f51f6c3a4761e5047488",
+      "version": 6
+    },
+    "TRIGGER:trg_roleprocedurepermission_history_ai": {
+      "checksum": "25b3fd5d94d180a5701e2a503565e441c575f2df52237a84fc3f9884d5dce71c",
+      "version": 5
+    },
+    "TRIGGER:trg_roleprocedurepermission_history_au": {
+      "checksum": "b64b68633c8b19095216c1956bbfd592f80a8eb6e30db7ff2caa8b8ffce0118d",
+      "version": 6
+    },
+    "TRIGGER:trg_roleprocedurepermission_historyguard_bd": {
+      "checksum": "7f0b9d25cfd031760db093a6ddb97b4f0bb17420eaabf7678adf2c7942666962",
+      "version": 6
+    },
+    "TRIGGER:trg_roleprocedurepermission_historyguard_bi": {
+      "checksum": "d75516f3cd851269968eb489b265a294ef7e96e780361e64fc77b9122b2560bb",
+      "version": 6
+    },
+    "TRIGGER:trg_roleprocedurepermission_historyguard_bu": {
+      "checksum": "95ecb044fa944b630be716a20bd295d158d1e05080a4ea4fc7a7a3c84c4b87d5",
+      "version": 6
+    },
+    "TRIGGER:trg_serviceappointment_audit_ad": {
+      "checksum": "9399cc9fba84def4e6c88c45e9f3b6f185e2435faa654fd3681bbeb55d760d4a",
+      "version": 1
+    },
+    "TRIGGER:trg_serviceappointment_audit_ai": {
+      "checksum": "d40fdf14300c404e02fc9f49fcff1595525bb16e90d31cbe976655bd9f592f48",
+      "version": 1
+    },
+    "TRIGGER:trg_serviceappointment_audit_au": {
+      "checksum": "564083c8e90fe1e5ebe6e9afa76eb82d3cd06bc11b90c0815d3fc9885212d534",
+      "version": 1
+    },
+    "TRIGGER:trg_serviceappointment_history_ad": {
+      "checksum": "523049d6af50143799f7c4742c1feab0551e3369e1b4f5901bb1dcad74bc8575",
+      "version": 6
+    },
+    "TRIGGER:trg_serviceappointment_history_ai": {
+      "checksum": "db6a9586691446ee46608a8c63be59e7c5a291e883d3d6ca81feb6cef1f64725",
+      "version": 5
+    },
+    "TRIGGER:trg_serviceappointment_history_au": {
+      "checksum": "f719f3b1be3eb8a3497d43d48676f91476034572b8470556696bc36936043c81",
+      "version": 6
+    },
+    "TRIGGER:trg_serviceappointment_historyguard_bd": {
+      "checksum": "1aa3c9dc2ce9f9f33e8aecfbe4b527f43ca9f1d8a5c5b6be5e1732a573777e04",
+      "version": 6
+    },
+    "TRIGGER:trg_serviceappointment_historyguard_bi": {
+      "checksum": "ef69206d89b99d05329d51e84393faab58e6fcff482085eba201b46d146a967c",
+      "version": 6
+    },
+    "TRIGGER:trg_serviceappointment_historyguard_bu": {
+      "checksum": "88b91dd8ed39a08c782dde62bf1f9ef4a34588d46bcf856cca47aa0105b5c3c9",
+      "version": 6
+    },
+    "TRIGGER:trg_serviceappointment_indicator_bi": {
+      "checksum": "13a1b0840897e499b0af171408f844542014d92db0a894fd4862909e31a068b7",
+      "version": 4
+    },
+    "TRIGGER:trg_serviceappointment_indicator_bu": {
+      "checksum": "2b7894204b38efdaefdee3799f623971a6f6541ee733edef81d6629567733d45",
+      "version": 4
+    },
+    "TRIGGER:trg_serviceappointment_provenance_bi": {
+      "checksum": "942a22cab4fb840b5d5e7e0f8eb4384f4a06598fd80582188a0aca02e06ef08f",
+      "version": 6
+    },
+    "TRIGGER:trg_serviceappointment_provenance_bu": {
+      "checksum": "1356385d205ee34e4d2ce1f11df241d18e9770101b22dea35fe0c75dd74c80bf",
+      "version": 6
+    },
+    "TRIGGER:trg_serviceappointment_schedule_validate_bu": {
+      "checksum": "ab030a0a6582ea4b3aa5993659a5d0d1be140bb81c5b683ab97c6f288c688467",
+      "version": 6
+    },
+    "TRIGGER:trg_serviceappointment_status_validate_bu": {
+      "checksum": "bbe6677e98481a7e44e3ca09e83e7dc2b296d67abcec489fd17f0f75f166986c",
+      "version": 6
+    },
+    "TRIGGER:trg_technician_history_ad": {
+      "checksum": "3b68e42ec8d41469708ed3b32d0b247c40d82dc05ba57d20f836303f728133fd",
+      "version": 6
+    },
+    "TRIGGER:trg_technician_history_ai": {
+      "checksum": "64581240da5f83a911a6f547868332772fcce248855c514dbda44ba7f1d45e82",
+      "version": 5
+    },
+    "TRIGGER:trg_technician_history_au": {
+      "checksum": "ab9cd432e12aceb038c82c9ed7af623d747443011e4a392998324d98739076ad",
+      "version": 6
+    },
+    "TRIGGER:trg_technician_historyguard_bd": {
+      "checksum": "47553469841cf68d901446c8de91c3be8f34bd6651335de7c110240ea09ac2f9",
+      "version": 6
+    },
+    "TRIGGER:trg_technician_historyguard_bi": {
+      "checksum": "b8a35a0268038bd136244d5c6df27c72720bad85c4433ef06d097a26a108468c",
+      "version": 6
+    },
+    "TRIGGER:trg_technician_historyguard_bu": {
+      "checksum": "0559d40563ec5996362e46b31b95d0e605183e57085e8059d149bdca8839ebc2",
+      "version": 6
+    },
+    "TRIGGER:trg_technician_indicator_bi": {
+      "checksum": "473adc7354f08e538fa0fff808e1370e92fefd0c919baaff37fa89c1ceea7258",
+      "version": 4
+    },
+    "TRIGGER:trg_technician_indicator_bu": {
+      "checksum": "3bd82ce4a765b8ae7e266ba855a0b4be733c938b2c1f22a4bab0dfa9a031147a",
+      "version": 4
+    },
+    "TRIGGER:trg_technician_provenance_bi": {
+      "checksum": "533973bc3fc87d8971f8964172e0d4e0e4478c5d20c2e3cee0c8e17a6d9056a2",
+      "version": 6
+    },
+    "TRIGGER:trg_technician_provenance_bu": {
+      "checksum": "25c58edb5de51e2e7057ca0cbb6b7f4ceea24a6189ec3b6b1bb1b2097a733d69",
+      "version": 6
+    },
+    "TRIGGER:trg_temporalevent_deleteguard": {
+      "checksum": "28fe224b250cd06c428d5de1a0876f44a5beb814ffc78e65cfef9f95a8f64228",
+      "version": 6
+    },
+    "TRIGGER:trg_temporalevent_insertguard": {
+      "checksum": "dfdf58b4d41bb03479177833ac00d192c167801e90fbafab5e0280d531f57ea6",
+      "version": 6
+    },
+    "TRIGGER:trg_temporalevent_updateguard": {
+      "checksum": "fea8cfe2af6eda012e8e6d66dd1cd62fbf52f191e31da9f3a69f8d9aa62a4ba9",
+      "version": 6
+    },
+    "TRIGGER:trg_useraccount_history_ad": {
+      "checksum": "125fba2bff1713e156021fd201c4b276de0b0f0c589ce26650b6fe1cc631918b",
+      "version": 6
+    },
+    "TRIGGER:trg_useraccount_history_ai": {
+      "checksum": "0d86c58adb6405b3e9257149cf0489c0765df17c847cdc7373f9f0a112a1daac",
+      "version": 5
+    },
+    "TRIGGER:trg_useraccount_history_au": {
+      "checksum": "bdc3b252a5161bc6028de752ad818e9e3a62c00698f4d1a24c18c0cb36e835c3",
+      "version": 6
+    },
+    "TRIGGER:trg_useraccount_historyguard_bd": {
+      "checksum": "c318ff4c02872468f2b29925fa534dcb93ac8c4c54c054d681e5c6db0a46e582",
+      "version": 6
+    },
+    "TRIGGER:trg_useraccount_historyguard_bi": {
+      "checksum": "5bb1f97c8df3bd11bc5e262785d8783baf88beac3c2becd24ef444f67d88182a",
+      "version": 6
+    },
+    "TRIGGER:trg_useraccount_historyguard_bu": {
+      "checksum": "6736bf67f892e53be8cc5a7922f7cb15c0f6350227084a9a9c7d8683e1cf3785",
+      "version": 6
+    },
+    "TRIGGER:trg_useraccount_indicator_bi": {
+      "checksum": "06285b1dc0f77c12400fe215f84671775cd9e3090f2d05a7f8add7ac5a69c51c",
+      "version": 4
+    },
+    "TRIGGER:trg_useraccount_indicator_bu": {
+      "checksum": "4d6d25e88d0192078901bc744f4d220573cf23c5cb752c52e45a5a38936d7cec",
+      "version": 4
+    },
+    "TRIGGER:trg_useraccount_provenance_bi": {
+      "checksum": "9577da8fc2fc66bbd1ec3d9edbb6f17be2359eea81813b4d0c2fed1a9e78df3a",
+      "version": 6
+    },
+    "TRIGGER:trg_useraccount_provenance_bu": {
+      "checksum": "22282d3b95e270310dce147afb492f5ee0141c447cdb6be762bd7f0040570e72",
+      "version": 6
+    },
+    "TRIGGER:trg_userrolepolicy_history_ad": {
+      "checksum": "a505cbcc884a1f8f8aac7b55968043f3914714348d8f5212796ce765c3df9e16",
+      "version": 6
+    },
+    "TRIGGER:trg_userrolepolicy_history_ai": {
+      "checksum": "5221b1c00af1fe43d6b29085f6d8558609eed03b4ba33ccd4ff0d5cbb5f4834a",
+      "version": 5
+    },
+    "TRIGGER:trg_userrolepolicy_history_au": {
+      "checksum": "f73647eede28f57e027a7f9b57f7710c511d0db5460492319b268d6c9ec0539a",
+      "version": 6
+    },
+    "TRIGGER:trg_userrolepolicy_historyguard_bd": {
+      "checksum": "52c1204bc9fa2bf37a21e34ebabb0aadde8c056b76beea36cab578f13a237f1d",
+      "version": 6
+    },
+    "TRIGGER:trg_userrolepolicy_historyguard_bi": {
+      "checksum": "bc93b1eb6e15e044959bb5899b2f8c345aa2b91c90b78e33789c2cc1360ea02f",
+      "version": 6
+    },
+    "TRIGGER:trg_userrolepolicy_historyguard_bu": {
+      "checksum": "a2b17408aeea4e319c820e9bb157a04295608164937678e916bb3c5ad9d75938",
+      "version": 6
+    },
+    "TRIGGER:trg_userrolepolicy_profileguard_bu": {
+      "checksum": "2ca1a303164caa737d0c4ae9c7329aebd18477c98356222d11c9c0fccf8d8a13",
+      "version": 6
+    },
+    "TRIGGER:trg_vehicle_history_ad": {
+      "checksum": "9454fd2582f801d3b0dc5b728ad85dc784541dca50c86aed314b8347e4467a96",
+      "version": 6
+    },
+    "TRIGGER:trg_vehicle_history_ai": {
+      "checksum": "325efc98a3e54e20b51af118e7db0306a759cae5c7c129f32711baad84d069e7",
+      "version": 5
+    },
+    "TRIGGER:trg_vehicle_history_au": {
+      "checksum": "95ae5673e2beff40cbe0bc81ae9f1f3d90d82f0a6a02de0c371b071a12a2feaf",
+      "version": 6
+    },
+    "TRIGGER:trg_vehicle_historyguard_bd": {
+      "checksum": "07cc34bcd0d6beb3c6520357cdcc61813f25aabbbd061ee7d8ff2475aa470643",
+      "version": 6
+    },
+    "TRIGGER:trg_vehicle_historyguard_bi": {
+      "checksum": "a374223e75ff207daf1bd8406e01c7d163c8eb204ff35591432a0d9242cd40f6",
+      "version": 6
+    },
+    "TRIGGER:trg_vehicle_historyguard_bu": {
+      "checksum": "cc2f1c247742eb4320bfb6cba0d8131c6b725a1250f638f8521230863b3c77a1",
+      "version": 6
+    },
+    "TRIGGER:trg_vehicle_provenance_bi": {
+      "checksum": "ed2e498df5662cea78d9ef6c9e7c175cd0ebf6af0120f1d32c17b350a2ebd53f",
+      "version": 6
+    },
+    "TRIGGER:trg_vehicle_provenance_bu": {
+      "checksum": "f956052448361b44b9b041e5b64107d2e2f790180835fad718ac1882bd74d5bd",
+      "version": 6
+    },
+    "VIEW:vw_audittrail": {
+      "checksum": "b4c84c4e340965593c0ee4e5a8e012b6958872cab0cd60f79e1993f326f8d07e",
+      "version": 5
+    },
+    "VIEW:vw_myappointments": {
+      "checksum": "d4162a90d26f06d42a851f512ca1c8a41f7d8163395ee013fa3e68010a12cdf7",
+      "version": 4
+    },
+    "VIEW:vw_myrepairs": {
+      "checksum": "88bd4e1f1585473016bb109e077d5d6b85ece534bd61ece954e0747800e6b512",
+      "version": 4
+    },
+    "VIEW:vw_repairreferencelabels": {
+      "checksum": "99363026da6285d43c6d7787cd36e9198973dbd31659dced891fd34c8df16ef7",
+      "version": 3
+    },
+    "VIEW:vw_technicianworkload": {
+      "checksum": "b87717d77facfd9d237c89a197b4b856a5ba07fab2f39ec27ee813748eebc77c",
+      "version": 3
+    },
+    "VIEW:vw_vehicleservicehistory": {
+      "checksum": "6ec589c47867d6cff6bcdf110f146123649a53c687b4886732475c73c8e8b2ec",
+      "version": 3
+    }
+  },
+  "parent_contract_sha256": "94d124596a808d04cf00bcf0814ff6f2fd2c127426bef1c71205c9d21cf1dee2",
+  "replaced_objects": [
+    "FUNCTION:fn_applicationerrorid",
+    "FUNCTION:fn_errorclass"
+  ],
+  "scope": "Fresh consolidated revision 007; historical migrations remain version 006 resources.",
+  "version": 7
+}

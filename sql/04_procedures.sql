@@ -1,4 +1,4 @@
--- Final routines through schema version 006. No upgrade-only helpers.
+-- Current routines: v006 foundation plus procedure-only revision 007. No upgrade-only helpers.
 USE vehicle_service_maintenance;
 DELIMITER //
 
@@ -121,6 +121,7 @@ BEGIN
         WHEN 53004 THEN 'VSM_PART_NOT_FOUND'
         WHEN 53005 THEN 'VSM_CUSTOMER_NOT_FOUND'
         WHEN 53006 THEN 'VSM_USER_NOT_FOUND'
+        WHEN 53007 THEN 'VSM_RECORD_NOT_FOUND'
         WHEN 54001 THEN 'VSM_SCHEDULE_CONFLICT'
         WHEN 54002 THEN 'VSM_INVALID_TRANSITION'
         WHEN 54003 THEN 'VSM_FINAL_STATE_IMMUTABLE'
@@ -144,7 +145,7 @@ BEGIN
         WHEN p_IsWarning = TRUE OR LEFT(p_State, 2) = '01' THEN 'warning'
         WHEN p_Number IN (51001, 51002, 51003, 51004, 51005, 51006, 51007, 51008, 51009, 51010) THEN 'validation'
         WHEN p_Number IN (52001, 52002, 52003, 52004, 52005, 52006, 52007, 52008, 52009, 52010) THEN 'forbidden'
-        WHEN p_Number IN (53001, 53002, 53003, 53004, 53005, 53006) THEN 'not_found'
+        WHEN p_Number IN (53001, 53002, 53003, 53004, 53005, 53006, 53007) THEN 'not_found'
         WHEN p_Number IN (54001, 54002, 54003, 54004, 54005, 54006, 54007) THEN 'conflict'
         WHEN p_Number IN (55001) THEN 'warning'
         WHEN p_Number IN (59001, 59002, 59003) THEN 'critical'
@@ -948,4 +949,2315 @@ WHERE e.EntityType = 'PrincipalDelegation';
     SELECT * FROM tmp_TemporalPage ORDER BY EventID DESC;
     DROP TEMPORARY TABLE tmp_TemporalPage, tmp_TemporalPageIDs;
 END //
+
+-- Revision 007: internal rejection-audit transaction, never an application entry point.
+-- Call only after a successful business rollback, or before business work starts.
+-- The clean-connection application contract still applies; A2 remains deferred.
+CREATE PROCEDURE sp_TryRecordRejectedDiagnostic(
+    IN p_RequestedUserID INT, IN p_Procedure VARCHAR(64), IN p_Entity VARCHAR(100),
+    IN p_RecordID INT, IN p_Error TEXT, IN p_Request JSON, IN p_Context CHAR(36),
+    IN p_ErrorState CHAR(5), IN p_ErrorNumber INT, IN p_Outcome VARCHAR(16)
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_AuditStarted BOOLEAN DEFAULT FALSE;
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        IF v_AuditStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+        END IF;
+    END;
+
+    START TRANSACTION;
+    SET v_AuditStarted = TRUE;
+    CALL sp_RecordRejectedDiagnostic(p_RequestedUserID, p_Procedure, p_Entity, p_RecordID,
+        p_Error, p_Request, p_Context, p_ErrorState, p_ErrorNumber, p_Outcome);
+    COMMIT AND NO CHAIN NO RELEASE;
+END //
+
+-- Business handlers below keep stacked diagnostics and RESIGNAL in their own scope.
+-- They roll back business work first; the helper owns only the best-effort audit transaction.
+-- Each caller also tolerates an unavailable helper so the original exception always wins.
+-- Revision 007: typed business entry points; lifecycle/history triggers remain authoritative.
+CREATE PROCEDURE sp_CreateCustomer(
+    IN p_Name VARCHAR(100),
+    IN p_Phone VARCHAR(25),
+    IN p_Email VARCHAR(100),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_CreateCustomer', 'Customer', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_CreateCustomer', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_CreateCustomer', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    INSERT INTO Customer (Name, Phone, Email)
+    VALUES (p_Name, p_Phone, p_Email);
+    SET v_RecordID = LAST_INSERT_ID();
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS CustomerID;
+END //
+
+CREATE PROCEDURE sp_UpdateCustomer(
+    IN p_CustomerID INT,
+    IN p_Name VARCHAR(100),
+    IN p_Phone VARCHAR(25),
+    IN p_Email VARCHAR(100),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_UpdateCustomer', 'Customer', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_UpdateCustomer', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_UpdateCustomer', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT CustomerID INTO v_RecordID FROM Customer WHERE CustomerID = p_CustomerID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE Customer SET Name = p_Name, Phone = p_Phone, Email = p_Email
+    WHERE CustomerID = p_CustomerID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS CustomerID;
+END //
+
+CREATE PROCEDURE sp_CreateVehicle(
+    IN p_CustomerID INT,
+    IN p_VIN VARCHAR(17),
+    IN p_Make VARCHAR(50),
+    IN p_Model VARCHAR(50),
+    IN p_Year SMALLINT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_CreateVehicle', 'Vehicle', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_CreateVehicle', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_CreateVehicle', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    INSERT INTO Vehicle (CustomerID, VIN, Make, Model, `Year`)
+    VALUES (p_CustomerID, p_VIN, p_Make, p_Model, p_Year);
+    SET v_RecordID = LAST_INSERT_ID();
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS VehicleID;
+END //
+
+CREATE PROCEDURE sp_UpdateVehicle(
+    IN p_VehicleID INT,
+    IN p_CustomerID INT,
+    IN p_VIN VARCHAR(17),
+    IN p_Make VARCHAR(50),
+    IN p_Model VARCHAR(50),
+    IN p_Year SMALLINT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_UpdateVehicle', 'Vehicle', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_UpdateVehicle', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_UpdateVehicle', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT VehicleID INTO v_RecordID FROM Vehicle WHERE VehicleID = p_VehicleID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE Vehicle SET CustomerID = p_CustomerID, VIN = p_VIN, Make = p_Make, Model = p_Model, `Year` = p_Year
+    WHERE VehicleID = p_VehicleID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS VehicleID;
+END //
+
+CREATE PROCEDURE sp_CreateTechnician(
+    IN p_Name VARCHAR(100),
+    IN p_Phone VARCHAR(25),
+    IN p_Email VARCHAR(100),
+    IN p_ActiveStatus TINYINT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_CreateTechnician', 'Technician', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_CreateTechnician', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_CreateTechnician', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    INSERT INTO Technician (Name, Phone, Email, ActiveStatus)
+    VALUES (p_Name, p_Phone, p_Email, p_ActiveStatus);
+    SET v_RecordID = LAST_INSERT_ID();
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS TechnicianID;
+END //
+
+CREATE PROCEDURE sp_UpdateTechnician(
+    IN p_TechnicianID INT,
+    IN p_Name VARCHAR(100),
+    IN p_Phone VARCHAR(25),
+    IN p_Email VARCHAR(100),
+    IN p_ActiveStatus TINYINT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_UpdateTechnician', 'Technician', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_UpdateTechnician', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_UpdateTechnician', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT TechnicianID INTO v_RecordID FROM Technician WHERE TechnicianID = p_TechnicianID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE Technician SET Name = p_Name, Phone = p_Phone, Email = p_Email, ActiveStatus = p_ActiveStatus
+    WHERE TechnicianID = p_TechnicianID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS TechnicianID;
+END //
+
+CREATE PROCEDURE sp_CreatePart(
+    IN p_PartNumber VARCHAR(50),
+    IN p_PartName VARCHAR(100),
+    IN p_UnitCost DECIMAL(10,2),
+    IN p_UnitSellingPrice DECIMAL(10,2),
+    IN p_MinimumInventoryLevel INT,
+    IN p_ActiveStatus TINYINT,
+    IN p_QuantityOnHand INT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_CreatePart', 'Part', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_CreatePart', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_CreatePart', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    INSERT INTO Part (PartNumber, PartName, UnitCost, UnitSellingPrice, MinimumInventoryLevel, ActiveStatus, QuantityOnHand)
+    VALUES (p_PartNumber, p_PartName, p_UnitCost, p_UnitSellingPrice, p_MinimumInventoryLevel, p_ActiveStatus, p_QuantityOnHand);
+    SET v_RecordID = LAST_INSERT_ID();
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS PartID;
+END //
+
+CREATE PROCEDURE sp_UpdatePart(
+    IN p_PartID INT,
+    IN p_PartNumber VARCHAR(50),
+    IN p_PartName VARCHAR(100),
+    IN p_UnitCost DECIMAL(10,2),
+    IN p_UnitSellingPrice DECIMAL(10,2),
+    IN p_MinimumInventoryLevel INT,
+    IN p_ActiveStatus TINYINT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_UpdatePart', 'Part', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_UpdatePart', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_UpdatePart', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT PartID INTO v_RecordID FROM Part WHERE PartID = p_PartID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE Part
+    SET PartNumber = p_PartNumber,
+        PartName = p_PartName,
+        UnitCost = p_UnitCost,
+        UnitSellingPrice = p_UnitSellingPrice,
+        MinimumInventoryLevel = p_MinimumInventoryLevel,
+        ActiveStatus = p_ActiveStatus
+    WHERE PartID = p_PartID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS PartID;
+END //
+
+CREATE PROCEDURE sp_AdjustPartInventory(
+    IN p_PartID INT,
+    IN p_QuantityOnHand INT,
+    IN p_Reason VARCHAR(500),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_AdjustPartInventory', 'Part', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_AdjustPartInventory', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_AdjustPartInventory', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT PartID INTO v_RecordID FROM Part WHERE PartID = p_PartID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    SET @adj_reason = p_Reason;
+    UPDATE Part SET QuantityOnHand = p_QuantityOnHand
+    WHERE PartID = p_PartID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS PartID;
+END //
+
+CREATE PROCEDURE sp_UpdateServiceAppointment(
+    IN p_AppointmentID INT,
+    IN p_TechnicianID INT,
+    IN p_AppointmentDateTime DATETIME,
+    IN p_ServiceRequestDescription VARCHAR(500),
+    IN p_EstimatedDuration INT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_LockID INT;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_UpdateServiceAppointment', 'ServiceAppointment', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_UpdateServiceAppointment', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_UpdateServiceAppointment', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    -- Keep the appointment, vehicle, and technician lock order.
+    SELECT AppointmentID, VehicleID INTO v_RecordID, v_LockID
+    FROM ServiceAppointment WHERE AppointmentID = p_AppointmentID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    SELECT VehicleID INTO v_LockID FROM Vehicle WHERE VehicleID = v_LockID FOR UPDATE;
+    SELECT TechnicianID INTO v_LockID FROM Technician WHERE TechnicianID = p_TechnicianID FOR UPDATE;
+    UPDATE ServiceAppointment SET TechnicianID = p_TechnicianID, AppointmentDateTime = p_AppointmentDateTime,
+        ServiceRequestDescription = p_ServiceRequestDescription, EstimatedDuration = p_EstimatedDuration
+    WHERE AppointmentID = p_AppointmentID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS AppointmentID;
+END //
+
+CREATE PROCEDURE sp_SetServiceAppointmentStatus(
+    IN p_AppointmentID INT,
+    IN p_Status VARCHAR(20),
+    IN p_CancellationReason VARCHAR(500),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_SetServiceAppointmentStatus', 'ServiceAppointment', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_SetServiceAppointmentStatus', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_SetServiceAppointmentStatus', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT AppointmentID INTO v_RecordID FROM ServiceAppointment WHERE AppointmentID = p_AppointmentID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE ServiceAppointment SET Status = p_Status, CancellationReason = p_CancellationReason
+    WHERE AppointmentID = p_AppointmentID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS AppointmentID;
+END //
+
+CREATE PROCEDURE sp_CreateRepair(
+    IN p_AppointmentID INT,
+    IN p_RepairDateTime DATETIME,
+    IN p_RepairType VARCHAR(100),
+    IN p_RepairDescription VARCHAR(500),
+    IN p_LaborHours DECIMAL(5,2),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_LockID INT;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_CreateRepair', 'Repair', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_CreateRepair', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_CreateRepair', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT AppointmentID INTO v_LockID FROM ServiceAppointment WHERE AppointmentID = p_AppointmentID FOR UPDATE;
+    IF v_LockID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested appointment does not exist';
+    END IF;
+    INSERT INTO Repair (AppointmentID, RepairDateTime, RepairType, RepairDescription, LaborHours, Status)
+    VALUES (p_AppointmentID, p_RepairDateTime, p_RepairType, p_RepairDescription, p_LaborHours, 'Open');
+    SET v_RecordID = LAST_INSERT_ID();
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS RepairID;
+END //
+
+CREATE PROCEDURE sp_UpdateRepair(
+    IN p_RepairID INT,
+    IN p_RepairDateTime DATETIME,
+    IN p_RepairType VARCHAR(100),
+    IN p_RepairDescription VARCHAR(500),
+    IN p_LaborHours DECIMAL(5,2),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_UpdateRepair', 'Repair', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_UpdateRepair', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_UpdateRepair', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT RepairID INTO v_RecordID FROM Repair WHERE RepairID = p_RepairID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE Repair
+    SET RepairDateTime = p_RepairDateTime,
+        RepairType = p_RepairType,
+        RepairDescription = p_RepairDescription,
+        LaborHours = p_LaborHours
+    WHERE RepairID = p_RepairID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS RepairID;
+END //
+
+CREATE PROCEDURE sp_SetRepairStatus(
+    IN p_RepairID INT,
+    IN p_Status VARCHAR(20),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_SetRepairStatus', 'Repair', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_SetRepairStatus', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_SetRepairStatus', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT RepairID INTO v_RecordID FROM Repair WHERE RepairID = p_RepairID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    IF EXISTS (SELECT 1 FROM UserAccount WHERE UserID = v_ActorUserID AND RoleType = 'Technician')
+       AND NOT EXISTS (SELECT 1 FROM Repair r JOIN ServiceAppointment a ON a.AppointmentID = r.AppointmentID
+                       JOIN UserAccount u ON u.TechnicianID = a.TechnicianID
+                       WHERE r.RepairID = p_RepairID AND u.UserID = v_ActorUserID) THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 52006, MESSAGE_TEXT = 'Technicians may only update their own assigned repairs';
+    END IF;
+    UPDATE Repair SET Status = p_Status
+    WHERE RepairID = p_RepairID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS RepairID;
+END //
+
+CREATE PROCEDURE sp_CreateRepairEstimate(
+    IN p_AppointmentID INT,
+    IN p_EstimateDate DATE,
+    IN p_TotalAmount DECIMAL(10,2),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_CreateRepairEstimate', 'RepairEstimate', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_CreateRepairEstimate', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_CreateRepairEstimate', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    INSERT INTO RepairEstimate (AppointmentID, CreatedByUserID, EstimateDate, Status, TotalAmount)
+    VALUES (p_AppointmentID, v_ActorUserID, p_EstimateDate, 'Draft', p_TotalAmount);
+    SET v_RecordID = LAST_INSERT_ID();
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS EstimateID;
+END //
+
+CREATE PROCEDURE sp_UpdateRepairEstimate(
+    IN p_EstimateID INT,
+    IN p_EstimateDate DATE,
+    IN p_TotalAmount DECIMAL(10,2),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_UpdateRepairEstimate', 'RepairEstimate', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_UpdateRepairEstimate', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_UpdateRepairEstimate', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT EstimateID INTO v_RecordID FROM RepairEstimate WHERE EstimateID = p_EstimateID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE RepairEstimate SET EstimateDate = p_EstimateDate, TotalAmount = p_TotalAmount
+    WHERE EstimateID = p_EstimateID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS EstimateID;
+END //
+
+CREATE PROCEDURE sp_FinalizeRepairEstimate(
+    IN p_EstimateID INT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_FinalizeRepairEstimate', 'RepairEstimate', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_FinalizeRepairEstimate', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_FinalizeRepairEstimate', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT EstimateID INTO v_RecordID FROM RepairEstimate WHERE EstimateID = p_EstimateID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE RepairEstimate SET Status = 'Finalized'
+    WHERE EstimateID = p_EstimateID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS EstimateID;
+END //
+
+CREATE PROCEDURE sp_CreateInvoice(
+    IN p_AppointmentID INT,
+    IN p_InvoiceDate DATE,
+    IN p_TotalAmount DECIMAL(10,2),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_CreateInvoice', 'Invoice', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_CreateInvoice', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_CreateInvoice', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    INSERT INTO Invoice (AppointmentID, CreatedByUserID, InvoiceDate, Status, TotalAmount)
+    VALUES (p_AppointmentID, v_ActorUserID, p_InvoiceDate, 'Draft', p_TotalAmount);
+    SET v_RecordID = LAST_INSERT_ID();
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS InvoiceID;
+END //
+
+CREATE PROCEDURE sp_UpdateInvoice(
+    IN p_InvoiceID INT,
+    IN p_InvoiceDate DATE,
+    IN p_TotalAmount DECIMAL(10,2),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_UpdateInvoice', 'Invoice', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_UpdateInvoice', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_UpdateInvoice', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT InvoiceID INTO v_RecordID FROM Invoice WHERE InvoiceID = p_InvoiceID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE Invoice SET InvoiceDate = p_InvoiceDate, TotalAmount = p_TotalAmount
+    WHERE InvoiceID = p_InvoiceID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS InvoiceID;
+END //
+
+CREATE PROCEDURE sp_FinalizeInvoice(
+    IN p_InvoiceID INT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_FinalizeInvoice', 'Invoice', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_FinalizeInvoice', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_FinalizeInvoice', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT InvoiceID INTO v_RecordID FROM Invoice WHERE InvoiceID = p_InvoiceID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE Invoice SET Status = 'Finalized'
+    WHERE InvoiceID = p_InvoiceID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS InvoiceID;
+END //
+
+CREATE PROCEDURE sp_SubmitRepairEstimate(
+    IN p_EstimateID INT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_SubmitRepairEstimate', 'RepairEstimate', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_SubmitRepairEstimate', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_SubmitRepairEstimate', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT EstimateID INTO v_RecordID FROM RepairEstimate WHERE EstimateID = p_EstimateID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE RepairEstimate SET Status = 'Pending Approval'
+    WHERE EstimateID = p_EstimateID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS EstimateID;
+END //
+
+CREATE PROCEDURE sp_ExpireRepairEstimate(
+    IN p_EstimateID INT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_ExpireRepairEstimate', 'RepairEstimate', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_ExpireRepairEstimate', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_ExpireRepairEstimate', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT EstimateID INTO v_RecordID FROM RepairEstimate WHERE EstimateID = p_EstimateID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE RepairEstimate SET Status = 'Expired'
+    WHERE EstimateID = p_EstimateID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS EstimateID;
+END //
+
+CREATE PROCEDURE sp_DecideRepairEstimate(
+    IN p_EstimateID INT,
+    IN p_Decision VARCHAR(20),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_DecideRepairEstimate', 'RepairEstimate', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_DecideRepairEstimate', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_DecideRepairEstimate', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT EstimateID INTO v_RecordID FROM RepairEstimate WHERE EstimateID = p_EstimateID FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    IF p_Decision IS NULL OR p_Decision NOT IN ('Approved', 'Rejected') THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 51004, MESSAGE_TEXT = 'Decision must be Approved or Rejected';
+    END IF;
+    UPDATE RepairEstimate SET Status = p_Decision
+    WHERE EstimateID = p_EstimateID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS EstimateID;
+END //
+
+CREATE PROCEDURE sp_CreateEstimateLineItem(
+    IN p_EstimateID INT,
+    IN p_LineNumber INT,
+    IN p_Description VARCHAR(500),
+    IN p_Quantity INT,
+    IN p_UnitPrice DECIMAL(10,2),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_ParentStatus VARCHAR(20);
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_CreateEstimateLineItem', 'EstimateLineItem', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_CreateEstimateLineItem', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_CreateEstimateLineItem', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT Status INTO v_ParentStatus FROM RepairEstimate WHERE EstimateID = p_EstimateID FOR UPDATE;
+    IF v_ParentStatus IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested parent record does not exist';
+    END IF;
+    IF v_ParentStatus = 'Finalized' THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 54003, MESSAGE_TEXT = 'Finalized line items cannot be modified';
+    END IF;
+    INSERT INTO EstimateLineItem (EstimateID, LineNumber, Description, Quantity, UnitPrice, LineTotal)
+    VALUES (p_EstimateID, p_LineNumber, p_Description, p_Quantity, p_UnitPrice, p_Quantity*p_UnitPrice);
+    SET v_RecordID = p_LineNumber;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT p_EstimateID AS EstimateID, v_RecordID AS LineNumber;
+END //
+
+CREATE PROCEDURE sp_UpdateEstimateLineItem(
+    IN p_EstimateID INT,
+    IN p_LineNumber INT,
+    IN p_Description VARCHAR(500),
+    IN p_Quantity INT,
+    IN p_UnitPrice DECIMAL(10,2),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_ParentStatus VARCHAR(20);
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_UpdateEstimateLineItem', 'EstimateLineItem', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_UpdateEstimateLineItem', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_UpdateEstimateLineItem', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT Status INTO v_ParentStatus FROM RepairEstimate WHERE EstimateID = p_EstimateID FOR UPDATE;
+    IF v_ParentStatus IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested parent record does not exist';
+    END IF;
+    IF v_ParentStatus = 'Finalized' THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 54003, MESSAGE_TEXT = 'Finalized line items cannot be modified';
+    END IF;
+    SELECT LineNumber INTO v_RecordID FROM EstimateLineItem WHERE EstimateID = p_EstimateID AND LineNumber = p_LineNumber FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    UPDATE EstimateLineItem
+    SET Description = p_Description,
+        Quantity = p_Quantity,
+        UnitPrice = p_UnitPrice,
+        LineTotal = p_Quantity*p_UnitPrice
+    WHERE EstimateID = p_EstimateID AND LineNumber = p_LineNumber;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS LineNumber;
+END //
+
+CREATE PROCEDURE sp_DeleteEstimateLineItem(
+    IN p_EstimateID INT,
+    IN p_LineNumber INT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_ParentStatus VARCHAR(20);
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_DeleteEstimateLineItem', 'EstimateLineItem', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_DeleteEstimateLineItem', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_DeleteEstimateLineItem', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT Status INTO v_ParentStatus FROM RepairEstimate WHERE EstimateID = p_EstimateID FOR UPDATE;
+    IF v_ParentStatus IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested parent record does not exist';
+    END IF;
+    IF v_ParentStatus = 'Finalized' THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 54003, MESSAGE_TEXT = 'Finalized line items cannot be modified';
+    END IF;
+    SELECT LineNumber INTO v_RecordID FROM EstimateLineItem WHERE EstimateID = p_EstimateID AND LineNumber = p_LineNumber FOR UPDATE;
+    IF v_RecordID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested record does not exist';
+    END IF;
+    DELETE FROM EstimateLineItem WHERE EstimateID = p_EstimateID AND LineNumber = p_LineNumber;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS LineNumber;
+END //
+
+CREATE PROCEDURE sp_CreateInvoiceLineItem(
+    IN p_InvoiceID INT,
+    IN p_Description VARCHAR(500),
+    IN p_Quantity INT,
+    IN p_UnitPrice DECIMAL(10,2),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_ParentStatus VARCHAR(20);
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_CreateInvoiceLineItem', 'InvoiceLineItem', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_CreateInvoiceLineItem', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_CreateInvoiceLineItem', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT Status INTO v_ParentStatus FROM Invoice WHERE InvoiceID = p_InvoiceID FOR UPDATE;
+    IF v_ParentStatus IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested parent record does not exist';
+    END IF;
+    IF v_ParentStatus = 'Finalized' THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 54003, MESSAGE_TEXT = 'Finalized line items cannot be modified';
+    END IF;
+    INSERT INTO InvoiceLineItem (InvoiceID, Description, Quantity, UnitPrice, LineTotal)
+    VALUES (p_InvoiceID, p_Description, p_Quantity, p_UnitPrice, p_Quantity*p_UnitPrice);
+    SET v_RecordID = LAST_INSERT_ID();
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT p_InvoiceID AS InvoiceID, v_RecordID AS InvoiceLineItemID;
+END //
+
+CREATE PROCEDURE sp_UpdateInvoiceLineItem(
+    IN p_InvoiceLineItemID INT,
+    IN p_Description VARCHAR(500),
+    IN p_Quantity INT,
+    IN p_UnitPrice DECIMAL(10,2),
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_InvoiceID INT;
+    DECLARE v_ParentStatus VARCHAR(20);
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_UpdateInvoiceLineItem', 'InvoiceLineItem', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_UpdateInvoiceLineItem', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_UpdateInvoiceLineItem', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT InvoiceID INTO v_InvoiceID FROM InvoiceLineItem WHERE InvoiceLineItemID = p_InvoiceLineItemID FOR UPDATE;
+    SELECT InvoiceID, Status INTO v_InvoiceID, v_ParentStatus FROM Invoice WHERE InvoiceID = v_InvoiceID FOR UPDATE;
+    IF v_ParentStatus IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested parent record does not exist';
+    END IF;
+    IF v_ParentStatus = 'Finalized' THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 54003, MESSAGE_TEXT = 'Finalized line items cannot be modified';
+    END IF;
+    -- The first locking read already holds this line; set its audit ID only after parent checks.
+    SET v_RecordID = p_InvoiceLineItemID;
+    UPDATE InvoiceLineItem
+    SET Description = p_Description,
+        Quantity = p_Quantity,
+        UnitPrice = p_UnitPrice,
+        LineTotal = p_Quantity*p_UnitPrice
+    WHERE InvoiceLineItemID = p_InvoiceLineItemID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS InvoiceLineItemID;
+END //
+
+CREATE PROCEDURE sp_DeleteInvoiceLineItem(
+    IN p_InvoiceLineItemID INT,
+    IN p_ActorUserID INT
+)
+SQL SECURITY DEFINER
+BEGIN
+    DECLARE v_ActorUserID INT;
+    DECLARE v_RecordID INT DEFAULT NULL;
+    DECLARE v_InvoiceID INT;
+    DECLARE v_ParentStatus VARCHAR(20);
+    DECLARE v_CallContext CHAR(36);
+    DECLARE v_TransactionStarted BOOLEAN DEFAULT FALSE;
+    DECLARE v_CommitAttempted BOOLEAN DEFAULT FALSE;
+    DECLARE v_RollbackSucceeded BOOLEAN DEFAULT TRUE;
+    DECLARE v_ErrorState, v_ConditionState CHAR(5);
+    DECLARE v_ErrorNumber, v_ConditionNumber INT;
+    DECLARE v_ErrorMessage, v_ConditionMessage TEXT;
+    DECLARE v_ConditionCount INT;
+    DECLARE v_ConditionIndex INT DEFAULT 1;
+    DECLARE v_Outcome VARCHAR(16) DEFAULT 'unknown';
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET STACKED DIAGNOSTICS v_ConditionCount = NUMBER;
+        GET STACKED DIAGNOSTICS CONDITION 1
+            v_ErrorState = RETURNED_SQLSTATE, v_ErrorNumber = MYSQL_ERRNO, v_ErrorMessage = MESSAGE_TEXT;
+        WHILE v_ConditionIndex <= v_ConditionCount DO
+            GET STACKED DIAGNOSTICS CONDITION v_ConditionIndex
+                v_ConditionState = RETURNED_SQLSTATE, v_ConditionNumber = MYSQL_ERRNO,
+                v_ConditionMessage = MESSAGE_TEXT;
+            IF LEFT(v_ConditionState, 2) NOT IN ('00', '01', '02') AND v_ConditionNumber NOT IN (1196, 1751, 1752) THEN
+                SET v_ErrorState = v_ConditionState, v_ErrorNumber = v_ConditionNumber, v_ErrorMessage = v_ConditionMessage;
+            END IF;
+            SET v_ConditionIndex = v_ConditionIndex + 1;
+        END WHILE;
+        IF v_TransactionStarted THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_RollbackSucceeded = FALSE;
+                ROLLBACK AND NO CHAIN NO RELEASE;
+            END;
+            IF v_RollbackSucceeded AND NOT v_CommitAttempted THEN SET v_Outcome = 'rolled_back'; END IF;
+        ELSEIF NOT v_CommitAttempted THEN SET v_Outcome = 'not_started'; END IF;
+        IF v_RollbackSucceeded THEN
+            BEGIN
+                DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+                CALL sp_TryRecordRejectedDiagnostic(p_ActorUserID, 'sp_DeleteInvoiceLineItem', 'InvoiceLineItem', v_RecordID,
+                    v_ErrorMessage, JSON_OBJECT('RecordID', v_RecordID), v_CallContext, v_ErrorState, v_ErrorNumber, v_Outcome);
+            END;
+        END IF;
+        SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+        RESIGNAL;
+    END;
+
+    SET v_CallContext = UUID();
+    CALL sp_ResolveActor(p_ActorUserID, 'sp_DeleteInvoiceLineItem', v_ActorUserID);
+    START TRANSACTION;
+    SET v_TransactionStarted = TRUE;
+    INSERT INTO OperationContext (ConnectionID, SessionAccount, UserID, ProcedureName, ContextID)
+    VALUES (CONNECTION_ID(), USER(), v_ActorUserID, 'sp_DeleteInvoiceLineItem', v_CallContext);
+    SET @app_user_id = v_ActorUserID, @context_id = v_CallContext, @adj_reason = NULL;
+
+    SELECT InvoiceID INTO v_InvoiceID FROM InvoiceLineItem WHERE InvoiceLineItemID = p_InvoiceLineItemID FOR UPDATE;
+    SELECT InvoiceID, Status INTO v_InvoiceID, v_ParentStatus FROM Invoice WHERE InvoiceID = v_InvoiceID FOR UPDATE;
+    IF v_ParentStatus IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 53007, MESSAGE_TEXT = 'Requested parent record does not exist';
+    END IF;
+    IF v_ParentStatus = 'Finalized' THEN
+        SIGNAL SQLSTATE '45000' SET MYSQL_ERRNO = 54003, MESSAGE_TEXT = 'Finalized line items cannot be modified';
+    END IF;
+    -- The first locking read already holds this line; set its audit ID only after parent checks.
+    SET v_RecordID = p_InvoiceLineItemID;
+    DELETE FROM InvoiceLineItem WHERE InvoiceLineItemID = p_InvoiceLineItemID;
+
+    DELETE FROM OperationContext WHERE ConnectionID = CONNECTION_ID() AND SessionAccount = USER() AND ContextID = v_CallContext;
+    SET v_CommitAttempted = TRUE;
+    COMMIT AND NO CHAIN NO RELEASE;
+    SET v_TransactionStarted = FALSE;
+    SET @app_user_id = NULL, @adj_reason = NULL, @context_id = NULL;
+    SELECT v_RecordID AS InvoiceLineItemID;
+END //
+
 DELIMITER ;

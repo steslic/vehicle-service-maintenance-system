@@ -20,6 +20,7 @@ DEMO_PRINCIPALS = (
     "role_service_advisor", "role_technician", "role_manager",
     "sa_amy", "tech_ben", "mgr_mike",
 )
+FIXTURE_PRINCIPALS = (*DEMO_PRINCIPALS, 'tech_carla')
 CONSOLIDATED_FILES = ('01_schema.sql', '02_indexes.sql', '04_procedures.sql',
                       '03_views_reports.sql', '06_sample_data.sql', '05_triggers_roles.sql',
                       '08_demo_accounts.sql', '07_tests.sql')
@@ -79,7 +80,7 @@ def main(argv=None):
     parser.add_argument("-u", "--user", default="vsm_developer")
     parser.add_argument("-p", "--password", action="store_true", help="Prompt for a password")
     parser.add_argument("--admin-user", default="vsm_admin",
-                        help="Separate account used only for demo provisioning and legacy routine grants")
+                        help="Separate account for principal preflight, demo provisioning, and legacy routine grants")
     parser.add_argument("--admin-password", action="store_true",
                         help="Prompt for admin password (otherwise VSM_ADMIN_PASSWORD)")
     parser.add_argument("--socket")
@@ -89,7 +90,7 @@ def main(argv=None):
     parser.add_argument("--baseline", action="store_true", help="Verify/register an unversioned database before upgrading")
     parser.add_argument("--target-version", type=int, help="Stop at this migration version (default: latest)")
     parser.add_argument('--build-profile', choices=('auto', 'consolidated', 'legacy'), default='auto',
-                        help='Fresh installation source; targets below 006 automatically use legacy')
+                        help='Fresh installation source; migration targets through 006 automatically use legacy')
     parser.add_argument("--log-dir", type=Path, help="Build log directory (default: repository logs/)")
     args = parser.parse_args(argv)
 
@@ -109,8 +110,8 @@ def main(argv=None):
         parser.error("--baseline is only valid with --migrate")
     if args.migrate and args.build_profile != 'auto':
         parser.error('--build-profile is only valid for fresh builds')
-    if args.build_profile == 'consolidated' and args.target_version is not None and args.target_version < 6:
-        parser.error('Consolidated installations start at version 006')
+    if args.build_profile == 'consolidated' and args.target_version is not None and args.target_version <= 6:
+        parser.error('Current consolidated installations use revision 007; use the legacy profile for migration targets through 006')
 
     root = Path(__file__).resolve().parent.parent
     log = None
@@ -120,7 +121,7 @@ def main(argv=None):
         log.write(f"MODE: {'migrate' if args.migrate else 'build'}; DATABASE: {args.database}")
         sha, dirty = source_revision(root)
         log.write(f"SOURCE COMMIT: {sha}; WORKTREE DIRTY: {str(dirty).lower()}")
-        legacy = args.build_profile == 'legacy' or (args.target_version is not None and args.target_version < 6)
+        legacy = args.build_profile == 'legacy' or (args.target_version is not None and args.target_version <= 6)
         consolidated = not args.migrate and not legacy
         inputs = load_inputs(root / 'sql', legacy=legacy, historical=not consolidated)
         if consolidated:
@@ -183,7 +184,7 @@ def main(argv=None):
                 if exists and not args.dev_reset:
                     raise ValueError(f"Refusing existing database '{args.database}'; contents were not changed")
                 if args.with_demo_accounts:
-                    names = ", ".join(f"'{name}'" for name in DEMO_PRINCIPALS)
+                    names = ", ".join(f"'{name}'" for name in FIXTURE_PRINCIPALS)
                     collisions = get_admin().run(f"SELECT User, Host FROM mysql.user WHERE User IN ({names});")
                     if collisions:
                         raise ValueError("Refusing demo provisioning: existing users/roles would collide:\n" + collisions)
@@ -191,9 +192,13 @@ def main(argv=None):
                     get_admin()  # Fail authentication before creating/resetting a database.
                 reader_grants = ()
                 if consolidated and not args.with_demo_accounts:
-                    reader_grants = existing_reader_grants(session, args.database)
-                    if reader_grants:
-                        get_admin()  # Qualified existing roles need grants even without demo provisioning.
+                    # Table-recipient metadata cannot reveal schema/global or column DML grants.
+                    # Refuse existing fixture principals rather than silently preserve a native bypass.
+                    names = ", ".join(f"'{name}'" for name in FIXTURE_PRINCIPALS)
+                    collisions = get_admin().run(f"SELECT User, Host FROM mysql.user WHERE User IN ({names});")
+                    log.write('ADMIN inspection: revision-007 native-principal collision preflight')
+                    if collisions:
+                        raise ValueError('Revision 007 refuses existing application principals; explicit privilege conversion is required before a fresh build:\n' + collisions)
                 if args.dev_reset:
                     log.write(f"OPERATION DEVELOPMENT RESET: {args.database}")
                     session.run(f"DROP DATABASE IF EXISTS `{args.database}`;")

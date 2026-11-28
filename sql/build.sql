@@ -1,7 +1,7 @@
 -- Vehicle Service and Maintenance Management System
 -- Ordered input list for scripts/build.py. The runner validates and inlines
 -- these files so SOURCE cannot hide an error or a missing file.
--- Fresh builds use only 01–08 plus the independent consolidated baseline contract.
+-- Fresh builds use 01–08 plus independently pinned v006 ancestry and revision-007 contracts.
 -- The runner phases schema/index/foreign-key creation; metadata is created by 01.
 -- Entries below 001–006 are a historical registry, not fresh-build operations.
 
